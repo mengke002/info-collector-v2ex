@@ -8,6 +8,7 @@ import time
 import random
 from typing import List, Dict, Any, Optional
 from bs4 import BeautifulSoup
+from fake_useragent import UserAgent
 import re
 from datetime import datetime
 
@@ -20,6 +21,7 @@ class V2EXWebParser:
     def __init__(self):
         self.crawler_config = config.get_crawler_config()
         self.logger = logging.getLogger(__name__)
+        self.ua = UserAgent()
         
         # 请求会话
         self.session = requests.Session()
@@ -34,6 +36,7 @@ class V2EXWebParser:
     def _get_random_headers(self) -> Dict[str, str]:
         """获取随机请求头"""
         return {
+            'User-Agent': self.ua.random,
             'Referer': 'https://www.v2ex.com/',
         }
     
@@ -133,7 +136,6 @@ class V2EXWebParser:
             return []
         
         topics = []
-        
         # Mobile layout: topics are in a div.box container, each in a div.cell
         # The first div.box is the node header, the second one contains the topics.
         topic_box = soup.select_one('div#Wrapper div.box:nth-of-type(2)')
@@ -170,18 +172,23 @@ class V2EXWebParser:
             if not title_link:
                 return None
             
+            # 提取基本信息
             title = title_link.get_text(strip=True)
             topic_url = title_link.get('href', '')
             topic_id = self._extract_topic_id_from_url(topic_url)
-
             if not topic_id:
                 return None
-
+            
+            # 查找作者信息 - V2EX作者链接格式是 /member/用户名
             author_username = None
             author_link = cell.select_one('span.small.fade strong')
             if author_link:
-                author_username = author_link.get_text(strip=True)
-
+                href = author_link.get('href', '')
+                # 从 /member/username 中提取用户名
+                if '/member/' in href:
+                    author_username = href.split('/member/')[-1]
+            
+            # 查找回复数 - 根据分析结果，在 .count_livid 中
             reply_count = 0
             reply_element = cell.select_one('a.count_livid')
             if reply_element and reply_element.get_text(strip=True).isdigit():
@@ -189,7 +196,6 @@ class V2EXWebParser:
 
             # Mobile view does not have a reliable timestamp. Default to now.
             created_timestamp = int(datetime.now().timestamp())
-
             topic_data = {
                 'id': topic_id,
                 'title': title,
