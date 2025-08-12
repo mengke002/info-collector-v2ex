@@ -1,4 +1,4 @@
-name: V2EX Data Crawler
+name: V2EX Info Collector
 
 on:
   schedule:
