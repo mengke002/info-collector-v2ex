@@ -75,6 +75,7 @@ class V2EXCrawler:
                 )
                 
                 if response.status_code == 200:
+                    self.logger.info(response.json())
                     return response.json()
                 elif response.status_code == 429:
                     # 被限流，等待更长时间
