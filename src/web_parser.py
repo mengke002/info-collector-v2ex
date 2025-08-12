@@ -8,10 +8,9 @@ import time
 import random
 from typing import List, Dict, Any, Optional
 from bs4 import BeautifulSoup
+from fake_useragent import UserAgent
 import re
 from datetime import datetime
-import gzip
-import zlib
 
 from .config import config
 
@@ -22,20 +21,22 @@ class V2EXWebParser:
     def __init__(self):
         self.crawler_config = config.get_crawler_config()
         self.logger = logging.getLogger(__name__)
+        self.ua = UserAgent()
         
         # 请求会话
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
             'Accept-Encoding': 'gzip, deflate, br',
             'Connection': 'keep-alive',
+            'Cache-Control': 'no-cache'
         })
     
     def _get_random_headers(self) -> Dict[str, str]:
         """获取随机请求头"""
         return {
+            'User-Agent': self.ua.random,
             'Referer': 'https://www.v2ex.com/',
         }
     
@@ -52,24 +53,7 @@ class V2EXWebParser:
                 response = self.session.get(url, headers=headers, timeout=timeout)
                 
                 if response.status_code == 200:
-                    content = response.content
-                    content_encoding = response.headers.get('Content-Encoding', '').lower()
-
-                    html_bytes = content
-                    if content_encoding == 'gzip':
-                        self.logger.debug("Decompressing gzip content manually.")
-                        try:
-                            html_bytes = gzip.decompress(content)
-                        except (gzip.BadGzipFile, zlib.error) as e:
-                            self.logger.error(f"Gzip decompression failed, parsing as-is: {e}")
-                    elif content_encoding == 'deflate':
-                        self.logger.debug("Decompressing deflate content manually.")
-                        try:
-                            html_bytes = zlib.decompress(content)
-                        except zlib.error as e:
-                            self.logger.error(f"Deflate decompression failed, parsing as-is: {e}")
-
-                    soup = BeautifulSoup(html_bytes, 'html.parser')
+                    soup = BeautifulSoup(response.content, 'html.parser')
                     return soup
                 elif response.status_code == 429:
                     # 被限流，等待更长时间
@@ -153,20 +137,17 @@ class V2EXWebParser:
         
         topics = []
         
-        # V2EX的主题列表在一个id为TopicsNode的div中
-        topic_container = soup.select_one('#TopicsNode')
-        if not topic_container:
-            self.logger.info(f"页面中未找到 #TopicsNode 容器，可能无主题列表或页面结构已更改。")
-            return []
-
-        # 主题项是容器内的.cell元素
-        topic_cells = topic_container.select('.cell')
+        # 根据分析结果，V2EX的主题结构是：
+        # div.cell > table > tr > td > span.item_title > a.topic-link
+        topic_cells = soup.select('div.cell')
         self.logger.debug(f"找到 {len(topic_cells)} 个.cell元素")
         
         # 过滤出包含主题的cell（有table结构和topic-link的）
         valid_topic_cells = []
         for cell in topic_cells:
-            if cell.select_one('span.item_title a.topic-link'):
+            # 检查是否有主题链接
+            topic_link = cell.select_one('a.topic-link') or cell.select_one('span.item_title a')
+            if topic_link and '/t/' in topic_link.get('href', ''):
                 valid_topic_cells.append(cell)
         
         self.logger.info(f"找到 {len(valid_topic_cells)} 个有效主题容器")
@@ -186,54 +167,92 @@ class V2EXWebParser:
     def _parse_topic_cell(self, cell, node_name: str) -> Optional[Dict[str, Any]]:
         """解析单个主题元素"""
         try:
-            title_link = cell.select_one('span.item_title a.topic-link')
-            if not title_link: return None
+            # 根据V2EX实际结构查找主题链接
+            title_link = cell.select_one('a.topic-link') or cell.select_one('span.item_title a')
+            if not title_link:
+                return None
             
+            # 提取基本信息
             title = title_link.get_text(strip=True)
             topic_url = title_link.get('href', '')
             topic_id = self._extract_topic_id_from_url(topic_url)
-            if not topic_id: return None
-
-            topic_info_element = cell.select_one('span.topic_info')
-            if not topic_info_element:
-                self.logger.warning(f"主题 {topic_id} 缺少 'topic_info' 元素，跳过解析")
-                return None
-
-            author_username = None
-            author_link = topic_info_element.select_one('strong a[href*="/member/"]')
-            if author_link:
-                author_username = author_link.get_text(strip=True)
-
-            reply_count = 0
-            reply_element = cell.select_one('a.count_livid')
-            if reply_element and reply_element.get_text(strip=True).isdigit():
-                reply_count = int(reply_element.get_text(strip=True))
-
-            created_timestamp = int(datetime.now().timestamp())
-            time_span = topic_info_element.select_one('span[title]')
-            if time_span and time_span.has_attr('title'):
-                timestamp = self._parse_relative_time(time_span['title'])
-                if timestamp: created_timestamp = timestamp
             
-            last_reply_by = None
-            all_member_links = topic_info_element.select('a[href*="/member/"]')
-            if '最后回复来自' in topic_info_element.get_text() and len(all_member_links) > 1:
-                last_reply_by = all_member_links[-1].get_text(strip=True)
-
-            return {
-                'id': topic_id, 'title': title,
+            if not topic_id:
+                return None
+            
+            # 查找作者信息 - V2EX作者链接格式是 /member/用户名
+            author_username = None
+            author_link = cell.select_one('a[href*="/member/"]')
+            if author_link:
+                href = author_link.get('href', '')
+                # 从 /member/username 中提取用户名
+                if '/member/' in href:
+                    author_username = href.split('/member/')[-1]
+            
+            # 查找回复数 - 根据分析结果，在 .count_livid 中
+            reply_count = 0
+            reply_element = cell.select_one('.count_livid')
+            if reply_element:
+                reply_text = reply_element.get_text(strip=True)
+                try:
+                    reply_count = int(reply_text)
+                except ValueError:
+                    reply_count = 0
+            
+            # 查找时间和其他信息 - 在 .fade 元素中
+            created_timestamp = None
+            fade_element = cell.select_one('.fade')
+            if fade_element:
+                fade_text = fade_element.get_text(strip=True)
+                # fade_text 格式类似: "longmeier90•  238 个字符  •  834 次点击"
+                # 或者可能包含时间信息
+                
+                # 尝试从fade文本中提取作者名（如果之前没找到）
+                if not author_username and '•' in fade_text:
+                    parts = fade_text.split('•')
+                    if parts:
+                        potential_username = parts[0].strip()
+                        if potential_username and not any(char in potential_username for char in ['个', '字', '符', '次', '点', '击']):
+                            author_username = potential_username
+                
+                # 尝试解析时间（如果包含时间关键词）
+                if any(keyword in fade_text for keyword in ['前', '分钟', '小时', '天', '月', '年']):
+                    created_timestamp = self._parse_relative_time(fade_text)
+            
+            # 如果没找到时间，使用当前时间
+            if not created_timestamp:
+                created_timestamp = int(datetime.now().timestamp())
+            
+            # 构建主题数据
+            topic_data = {
+                'id': topic_id,
+                'title': title,
                 'url': f"https://www.v2ex.com{topic_url}" if topic_url.startswith('/') else topic_url,
-                'node': {'name': node_name, 'title': node_name},
-                'node_id': None, 'node_name': node_name,
-                'member': {'username': author_username} if author_username else None,
-                'member_id': None, 'member_username': author_username,
-                'replies': reply_count, 'last_reply_by': last_reply_by,
-                'created': created_timestamp, 'last_touched': created_timestamp,
-                'last_modified': None, 'deleted': 0,
-                'content': '', 'content_rendered': ''
+                'node': {
+                    'name': node_name,
+                    'title': node_name
+                },
+                'node_id': None,  # HTML解析无法获取节点ID
+                'node_name': node_name,
+                'member': {
+                    'username': author_username
+                } if author_username else None,
+                'member_id': None,  # HTML解析无法获取用户ID
+                'member_username': author_username,
+                'replies': reply_count,
+                'last_reply_by': None,  # HTML解析无法获取最后回复者
+                'created': created_timestamp,
+                'last_touched': created_timestamp,
+                'last_modified': None,  # HTML解析无法获取修改时间
+                'deleted': 0,  # 默认未删除
+                'content': '',
+                'content_rendered': ''
             }
+            
+            return topic_data
+            
         except Exception as e:
-            self.logger.warning(f"解析单个主题元素失败: {e}", exc_info=True)
+            self.logger.warning(f"解析主题元素失败: {e}")
             return None
     
 
