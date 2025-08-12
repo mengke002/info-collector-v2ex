@@ -84,11 +84,3 @@ jobs:
           # 每30分钟执行增量更新
           python main.py --task crawl
         fi
-        
-    - name: Upload logs
-      if: always()
-      uses: actions/upload-artifact@v3
-      with:
-        name: crawler-logs-${{ github.run_number }}
-        path: v2ex_crawler.log
-        retention-days: 7
