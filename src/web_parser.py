@@ -53,7 +53,8 @@ class V2EXWebParser:
                 response = self.session.get(url, headers=headers, timeout=timeout)
                 
                 if response.status_code == 200:
-                    soup = BeautifulSoup(response.content, 'html.parser')
+                    response.encoding = 'utf-8'
+                    soup = BeautifulSoup(response.text, 'html.parser')
                     return soup
                 elif response.status_code == 429:
                     # 被限流，等待更长时间
