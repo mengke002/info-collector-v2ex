@@ -120,26 +120,10 @@ class DatabaseManager:
             """
             CREATE TABLE IF NOT EXISTS v2ex_users (
                 id INT AUTO_INCREMENT PRIMARY KEY COMMENT '自增主键ID',
-                v2ex_id INT UNIQUE COMMENT 'V2EX用户ID',
                 username VARCHAR(50) UNIQUE NOT NULL COMMENT '用户名',
-                url VARCHAR(500) COMMENT '用户主页URL',
-                website VARCHAR(500) COMMENT '个人网站',
-                github VARCHAR(100) COMMENT 'GitHub用户名',
-                twitter VARCHAR(100) COMMENT 'Twitter用户名',
-                location VARCHAR(200) COMMENT '地理位置',
-                tagline VARCHAR(500) COMMENT '个人标语',
-                bio TEXT COMMENT '个人简介',
-                avatar_mini VARCHAR(500) COMMENT '小头像URL',
-                avatar_normal VARCHAR(500) COMMENT '普通头像URL',
-                avatar_large VARCHAR(500) COMMENT '大头像URL',
-                created_timestamp INT UNSIGNED COMMENT '账号创建时间戳',
-                last_modified_timestamp INT UNSIGNED COMMENT '最后修改时间戳',
-                is_pro TINYINT DEFAULT 0 COMMENT '是否为Pro用户',
                 first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '首次采集时间',
                 
-                INDEX idx_v2ex_id (v2ex_id),
-                INDEX idx_username (username),
-                INDEX idx_created (created_timestamp)
+                INDEX idx_username (username)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=COMPRESSED;
             """,
             """
@@ -148,12 +132,9 @@ class DatabaseManager:
                 title VARCHAR(500) NOT NULL COMMENT '主题标题',
                 url VARCHAR(500) UNIQUE NOT NULL COMMENT '主题URL',
                 content TEXT COMMENT '主题内容(Markdown格式)',
-                node_id INT COMMENT '所属节点ID',
                 node_name VARCHAR(50) COMMENT '所属节点名称',
-                member_id INT COMMENT '作者用户ID',
                 member_username VARCHAR(50) COMMENT '作者用户名',
                 replies SMALLINT UNSIGNED DEFAULT 0 COMMENT '回复数',
-                last_reply_by VARCHAR(50) COMMENT '最后回复者',
                 created_timestamp INT UNSIGNED NOT NULL COMMENT '创建时间戳',
                 last_touched_timestamp INT UNSIGNED COMMENT '最后活跃时间戳',
                 last_modified_timestamp INT UNSIGNED COMMENT '最后修改时间戳',
@@ -164,15 +145,13 @@ class DatabaseManager:
                 INDEX idx_member (member_username),
                 INDEX idx_created (created_timestamp),
                 INDEX idx_last_touched (last_touched_timestamp),
-                INDEX idx_replies (replies),
-                FOREIGN KEY (member_id) REFERENCES v2ex_users(v2ex_id) ON DELETE SET NULL
+                INDEX idx_replies (replies)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=COMPRESSED;
             """,
             """
             CREATE TABLE IF NOT EXISTS v2ex_replies (
                 id INT PRIMARY KEY COMMENT '回复ID',
                 topic_id INT NOT NULL COMMENT '所属主题ID',
-                member_id INT COMMENT '回复用户ID',
                 member_username VARCHAR(50) COMMENT '回复用户名',
                 content VARCHAR(3000) COMMENT '回复内容(Markdown格式，最大3000字符)',
                 reply_floor SMALLINT UNSIGNED COMMENT '楼层号',
@@ -185,8 +164,7 @@ class DatabaseManager:
                 INDEX idx_member (member_username),
                 INDEX idx_created (created_timestamp),
                 INDEX idx_floor (reply_floor),
-                FOREIGN KEY (topic_id) REFERENCES v2ex_topics(id) ON DELETE CASCADE,
-                FOREIGN KEY (member_id) REFERENCES v2ex_users(v2ex_id) ON DELETE SET NULL
+                FOREIGN KEY (topic_id) REFERENCES v2ex_topics(id) ON DELETE CASCADE
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=COMPRESSED;
             """
         ]
@@ -198,75 +176,35 @@ class DatabaseManager:
             self.logger.info("数据库表结构初始化完成")
     
     def insert_or_update_user(self, user_data: Dict[str, Any]):
-        """插入或更新用户数据"""
+        """插入或更新用户数据（简化版，只保留有效字段）"""
         sanitized_data = self._sanitize_user_data(user_data)
         
-        # 如果没有v2ex_id字段，只有username，则使用仅username的插入方式
-        if 'id' not in sanitized_data and 'username' in sanitized_data:
-            # 对于只有username的用户，使用简化的插入方式
-            sql = """
-            INSERT IGNORE INTO v2ex_users (username, first_seen_at)
-            VALUES (%(username)s, %(first_seen_at)s)
-            """
-            
-            if 'first_seen_at' not in sanitized_data:
-                sanitized_data['first_seen_at'] = self.get_beijing_time()
-            
-            # 只保留必要的字段
-            minimal_data = {
-                'username': sanitized_data['username'],
-                'first_seen_at': sanitized_data['first_seen_at']
-            }
-            
-            try:
-                with self.get_cursor() as (cursor, connection):
-                    cursor.execute(sql, minimal_data)
-                    connection.commit()
-                    self.logger.debug(f"插入用户: {minimal_data['username']}")
-            except Exception as e:
-                self.logger.warning(f"插入用户 {minimal_data['username']} 失败: {e}")
-            return
-        
-        # 原有的完整用户数据插入逻辑（将id字段映射为v2ex_id）
+        # 简化的用户插入方式，只保留username和first_seen_at
         sql = """
-        INSERT INTO v2ex_users (
-            v2ex_id, username, url, website, github, twitter, location, tagline, bio,
-            avatar_mini, avatar_normal, avatar_large, created_timestamp,
-            last_modified_timestamp, is_pro, first_seen_at
-        ) VALUES (
-            %(id)s, %(username)s, %(url)s, %(website)s, %(github)s, %(twitter)s,
-            %(location)s, %(tagline)s, %(bio)s, %(avatar_mini)s, %(avatar_normal)s,
-            %(avatar_large)s, %(created)s, %(last_modified)s, %(pro)s, %(first_seen_at)s
-        ) ON DUPLICATE KEY UPDATE
-            url = VALUES(url),
-            website = VALUES(website),
-            github = VALUES(github),
-            twitter = VALUES(twitter),
-            location = VALUES(location),
-            tagline = VALUES(tagline),
-            bio = VALUES(bio),
-            avatar_mini = VALUES(avatar_mini),
-            avatar_normal = VALUES(avatar_normal),
-            avatar_large = VALUES(avatar_large),
-            last_modified_timestamp = VALUES(last_modified_timestamp),
-            is_pro = VALUES(is_pro)
+        INSERT IGNORE INTO v2ex_users (username, first_seen_at)
+        VALUES (%(username)s, %(first_seen_at)s)
         """
         
         if 'first_seen_at' not in sanitized_data:
             sanitized_data['first_seen_at'] = self.get_beijing_time()
         
-        # 修复is_pro字段范围问题
-        if 'pro' in sanitized_data:
-            pro_value = sanitized_data['pro']
-            if pro_value is None:
-                sanitized_data['pro'] = 0
-            else:
-                # 确保值在TINYINT范围内 (0-255)
-                sanitized_data['pro'] = min(max(int(pro_value), 0), 1)
+        # 只保留必要的字段
+        minimal_data = {
+            'username': sanitized_data.get('username', ''),
+            'first_seen_at': sanitized_data['first_seen_at']
+        }
         
-        with self.get_cursor() as (cursor, connection):
-            cursor.execute(sql, sanitized_data)
-            connection.commit()
+        if not minimal_data['username']:
+            self.logger.warning("用户名为空，跳过插入")
+            return
+        
+        try:
+            with self.get_cursor() as (cursor, connection):
+                cursor.execute(sql, minimal_data)
+                connection.commit()
+                self.logger.debug(f"插入用户: {minimal_data['username']}")
+        except Exception as e:
+            self.logger.warning(f"插入用户 {minimal_data['username']} 失败: {e}")
     
     def batch_insert_users_by_username(self, usernames: List[str]):
         """批量插入只有用户名的用户数据"""
@@ -315,24 +253,22 @@ class DatabaseManager:
             return success_count
     
     def insert_or_update_topic(self, topic_data: Dict[str, Any]):
-        """插入或更新主题数据"""
+        """插入或更新主题数据（简化版，删除无效字段）"""
         sanitized_data = self._sanitize_topic_data(topic_data)
         
         sql = """
         INSERT INTO v2ex_topics (
-            id, title, url, content, node_id, node_name,
-            member_id, member_username, replies, last_reply_by, created_timestamp,
-            last_touched_timestamp, last_modified_timestamp, is_deleted, crawled_at
+            id, title, url, content, node_name, member_username, replies,
+            created_timestamp, last_touched_timestamp, last_modified_timestamp,
+            is_deleted, crawled_at
         ) VALUES (
-            %(id)s, %(title)s, %(url)s, %(content)s,
-            %(node_id)s, %(node_name)s, %(member_id)s, %(member_username)s,
-            %(replies)s, %(last_reply_by)s, %(created)s, %(last_touched)s,
-            %(last_modified)s, %(deleted)s, %(crawled_at)s
+            %(id)s, %(title)s, %(url)s, %(content)s, %(node_name)s, %(member_username)s,
+            %(replies)s, %(created)s, %(last_touched)s, %(last_modified)s,
+            %(deleted)s, %(crawled_at)s
         ) ON DUPLICATE KEY UPDATE
             title = VALUES(title),
             content = VALUES(content),
             replies = VALUES(replies),
-            last_reply_by = VALUES(last_reply_by),
             last_touched_timestamp = VALUES(last_touched_timestamp),
             last_modified_timestamp = VALUES(last_modified_timestamp),
             is_deleted = VALUES(is_deleted),
@@ -344,16 +280,12 @@ class DatabaseManager:
         
         # 提取节点和用户信息，并移除嵌套dict
         if 'node' in sanitized_data and isinstance(sanitized_data['node'], dict):
-            if 'node_id' not in sanitized_data:
-                sanitized_data['node_id'] = sanitized_data['node'].get('id')
             if 'node_name' not in sanitized_data:
                 sanitized_data['node_name'] = sanitized_data['node'].get('name')
             # 移除嵌套dict，避免数据库写入错误
             del sanitized_data['node']
         
         if 'member' in sanitized_data and isinstance(sanitized_data['member'], dict):
-            if 'member_id' not in sanitized_data:
-                sanitized_data['member_id'] = sanitized_data['member'].get('id')
             if 'member_username' not in sanitized_data:
                 sanitized_data['member_username'] = sanitized_data['member'].get('username')
             # 移除嵌套dict，避免数据库写入错误
@@ -378,16 +310,12 @@ class DatabaseManager:
             
             # 提取嵌套的节点和用户信息，并移除嵌套dict
             if 'node' in sanitized and isinstance(sanitized['node'], dict):
-                if 'node_id' not in sanitized:
-                    sanitized['node_id'] = sanitized['node'].get('id')
                 if 'node_name' not in sanitized:
                     sanitized['node_name'] = sanitized['node'].get('name')
                 # 移除嵌套dict，避免数据库写入错误
                 del sanitized['node']
             
             if 'member' in sanitized and isinstance(sanitized['member'], dict):
-                if 'member_id' not in sanitized:
-                    sanitized['member_id'] = sanitized['member'].get('id')
                 if 'member_username' not in sanitized:
                     sanitized['member_username'] = sanitized['member'].get('username')
                 # 移除嵌套dict，避免数据库写入错误
@@ -397,19 +325,17 @@ class DatabaseManager:
         
         sql = """
         INSERT INTO v2ex_topics (
-            id, title, url, content, node_id, node_name,
-            member_id, member_username, replies, last_reply_by, created_timestamp,
-            last_touched_timestamp, last_modified_timestamp, is_deleted, crawled_at
+            id, title, url, content, node_name, member_username, replies,
+            created_timestamp, last_touched_timestamp, last_modified_timestamp,
+            is_deleted, crawled_at
         ) VALUES (
-            %(id)s, %(title)s, %(url)s, %(content)s,
-            %(node_id)s, %(node_name)s, %(member_id)s, %(member_username)s,
-            %(replies)s, %(last_reply_by)s, %(created)s, %(last_touched)s,
-            %(last_modified)s, %(deleted)s, %(crawled_at)s
+            %(id)s, %(title)s, %(url)s, %(content)s, %(node_name)s, %(member_username)s,
+            %(replies)s, %(created)s, %(last_touched)s, %(last_modified)s,
+            %(deleted)s, %(crawled_at)s
         ) ON DUPLICATE KEY UPDATE
             title = VALUES(title),
             content = VALUES(content),
             replies = VALUES(replies),
-            last_reply_by = VALUES(last_reply_by),
             last_touched_timestamp = VALUES(last_touched_timestamp),
             last_modified_timestamp = VALUES(last_modified_timestamp),
             is_deleted = VALUES(is_deleted),
@@ -542,11 +468,11 @@ class DatabaseManager:
         
         sql = """
         INSERT INTO v2ex_replies (
-            id, topic_id, member_id, member_username, content,
-            reply_floor, created_timestamp, last_modified_timestamp, thanks_count, crawled_at
+            id, topic_id, member_username, content, reply_floor,
+            created_timestamp, last_modified_timestamp, thanks_count, crawled_at
         ) VALUES (
-            %(id)s, %(topic_id)s, %(member_id)s, %(member_username)s, %(content)s,
-            %(reply_floor)s, %(created)s, %(last_modified)s, %(thanks)s, %(crawled_at)s
+            %(id)s, %(topic_id)s, %(member_username)s, %(content)s, %(reply_floor)s,
+            %(created)s, %(last_modified)s, %(thanks)s, %(crawled_at)s
         ) ON DUPLICATE KEY UPDATE
             content = VALUES(content),
             thanks_count = VALUES(thanks_count),
@@ -577,8 +503,6 @@ class DatabaseManager:
             
             # 处理嵌套的member信息，避免数据库写入错误
             if 'member' in sanitized and isinstance(sanitized['member'], dict):
-                if 'member_id' not in sanitized:
-                    sanitized['member_id'] = sanitized['member'].get('id')
                 if 'member_username' not in sanitized:
                     sanitized['member_username'] = sanitized['member'].get('username')
                 # 移除嵌套dict
@@ -588,11 +512,11 @@ class DatabaseManager:
         
         sql = """
         INSERT INTO v2ex_replies (
-            id, topic_id, member_id, member_username, content,
-            reply_floor, created_timestamp, last_modified_timestamp, thanks_count, crawled_at
+            id, topic_id, member_username, content, reply_floor,
+            created_timestamp, last_modified_timestamp, thanks_count, crawled_at
         ) VALUES (
-            %(id)s, %(topic_id)s, %(member_id)s, %(member_username)s, %(content)s,
-            %(reply_floor)s, %(created)s, %(last_modified)s, %(thanks)s, %(crawled_at)s
+            %(id)s, %(topic_id)s, %(member_username)s, %(content)s, %(reply_floor)s,
+            %(created)s, %(last_modified)s, %(thanks)s, %(crawled_at)s
         ) ON DUPLICATE KEY UPDATE
             content = VALUES(content),
             thanks_count = VALUES(thanks_count),
