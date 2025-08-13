@@ -53,11 +53,8 @@ class V2EXCrawler:
         self.request_count = 0
         self.rate_limit_delay = 1.0
         
-        # HTML到Markdown转换器
-        self.html_converter = html2text.HTML2Text()
-        self.html_converter.ignore_links = False
-        self.html_converter.ignore_images = False
-        self.html_converter.body_width = 0  # 不限制行宽
+        # HTML to Markdown converter will be created on-demand in the conversion
+        # method to ensure thread safety.
     
     def _get_random_headers(self) -> Dict[str, str]:
         """获取随机请求头"""
@@ -190,8 +187,14 @@ class V2EXCrawler:
             if not html_content or not html_content.strip():
                 return ''
             
+            # To ensure thread safety, create a new instance for each call.
+            html_converter = html2text.HTML2Text()
+            html_converter.ignore_links = False
+            html_converter.ignore_images = False
+            html_converter.body_width = 0  # Do not wrap lines.
+
             # 使用html2text转换
-            markdown_content = self.html_converter.handle(html_content)
+            markdown_content = html_converter.handle(html_content)
             
             # 清理多余的空行
             lines = markdown_content.split('\n')
