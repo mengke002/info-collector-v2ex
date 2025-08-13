@@ -519,6 +519,33 @@ class V2EXCrawler:
         self.logger.info(f"节点 '{node_name}' 线程池爬取完成: 成功 {processed_count - failed_count}/{total_topics}, 失败 {failed_count}, 总回复 {len(all_replies)}")
         return topics, all_replies, all_users
 
+    def _filter_topics_to_update(self, topics: List[Dict]) -> List[Dict]:
+        """筛选需要更新的主题"""
+        if not topics:
+            return []
+
+        topic_ids = [topic.get('id') for topic in topics if topic.get('id')]
+        db_last_touched_map = db_manager.get_topics_last_touched_batch(topic_ids)
+
+        topics_to_update = []
+        for topic in topics:
+            topic_id = topic.get('id')
+            if not topic_id:
+                continue
+
+            db_last_touched = db_last_touched_map.get(topic_id)
+            current_last_touched = topic.get('last_touched')
+
+            should_update = (
+                db_last_touched is None or
+                (current_last_touched and current_last_touched > db_last_touched)
+            )
+
+            if should_update:
+                topics_to_update.append(topic)
+
+        return topics_to_update
+
     def _save_crawled_data(self, all_topics: List[Dict], all_users: List[Dict], all_replies: List[Dict]) -> Dict[str, Any]:
         """保存爬取的数据（适配生产者消费者模式，大部分数据已在过程中保存）"""
         result = {
