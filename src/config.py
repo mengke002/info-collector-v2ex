@@ -72,7 +72,7 @@ class Config:
             'max_pages_per_node': self._get_config_value('crawler', 'max_pages_per_node', 'CRAWLER_MAX_PAGES_PER_NODE', 5, int),
             'fetch_replies': self._get_config_value('crawler', 'fetch_replies', 'CRAWLER_FETCH_REPLIES', True, lambda x: str(x).lower() == 'true'),
             'max_concurrent_nodes': self._get_config_value('crawler', 'max_concurrent_nodes', 'CRAWLER_MAX_CONCURRENT_NODES', 1, int),
-            'max_concurrent_replies': self._get_config_value('crawler', 'max_concurrent_replies', 'CRAWLER_MAX_CONCURRENT_REPLIES', 6, int)
+            'max_concurrent_replies': self._get_config_value('crawler', 'max_concurrent_replies', 'CRAWLER_MAX_CONCURRENT_REPLIES', 5, int)
         }
 
     def get_data_retention_days(self) -> int:
