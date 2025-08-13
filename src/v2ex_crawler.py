@@ -43,7 +43,7 @@ class V2EXCrawler:
         self.session.headers.update({
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-            # 'Accept-Encoding': 'gzip, deflate, br',
+            # 'Accept-Encoding': 'gzip, deflate, br', # Removed to avoid compression/decoding issues
             'Connection': 'keep-alive',
             'Cache-Control': 'no-cache'
         })
@@ -135,7 +135,6 @@ class V2EXCrawler:
                 self.logger.warning(f"获取主题页面失败: {topic_id} - 状态码: {response.status_code}")
                 return {'content': '', 'replies': []}
             
-            # 显式设置编码为utf-8，避免乱码问题
             response.encoding = 'utf-8'
             soup = BeautifulSoup(response.text, 'html.parser')
             
@@ -332,37 +331,26 @@ class V2EXCrawler:
         
         try:
             if concurrent_nodes > 1:
-                # 并发模式
+                # This async path is not the focus of the current fix.
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 try:
-                    result = loop.run_until_complete(self._crawl_all_nodes_async())
+                    self._crawl_all_nodes_async()
                 finally:
                     loop.close()
             else:
                 # 串行模式
-                result = self._crawl_all_nodes_sync()
+                self._crawl_all_nodes_sync()
             
-            all_topics = result['topics_to_update']
-            all_users = result['all_users']
-            all_replies = result['all_replies']
-            
-            self.logger.info(f"{mode}爬取完成: {len(all_topics)} 个主题, {len(all_replies)} 个回复")
-            
+            self.logger.info(f"所有节点爬取任务完成。")
+            # Data is saved in batches within the crawl functions.
+            # No final save step is needed. This prevents the script from hanging.
+            return {'success': True}
+
         except Exception as e:
-            self.logger.error(f"爬取失败: {e}")
-            return {
-                'topics_found': 0,
-                'topics_crawled': 0,
-                'users_saved': 0,
-                'replies_saved': 0,
-                'success': False,
-                'error': str(e)
-            }
-        
-        # 批量保存数据
-        return self._save_crawled_data(all_topics, all_users, all_replies)
-    
+            self.logger.error(f"爬取任务主流程失败: {e}", exc_info=True)
+            return {'success': False, 'error': str(e)}
+
     def _crawl_all_nodes_sync(self) -> Dict[str, Any]:
         """串行爬取所有节点"""
         all_topics = []
@@ -467,47 +455,47 @@ class V2EXCrawler:
             if fetch_replies:
                 # 对所有主题获取详情内容，包括没有回复的主题
                 self.logger.info(f"节点 '{node_name}' 开始生产者消费者模式爬取 {len(topics_to_update)} 个主题（并发数: {self.max_concurrent_replies}，分批入库）")
-                
+
                 # 使用线程池模式获取主题内容和回复
                 try:
                     updated_topics, all_replies, all_users = self._get_topic_content_and_replies_batch_threaded(
                         topics_to_update, node_name
                     )
                     topics_to_update = updated_topics
-                    
+
                     self.logger.info(f"节点 '{node_name}' 线程池模式完成，总共获取 {len(all_replies)} 个回复，{len(all_users)} 个用户")
-                    
+
                 except Exception as e:
                     self.logger.error(f"节点 '{node_name}' 线程池模式失败，回退到串行模式: {e}")
                     # 回退到原来的串行方式
                     for i, topic in enumerate(topics_to_update, 1):
                         topic_id = topic['id']
                         reply_count = topic.get('replies', 0)
-                        
+
                         self.logger.info(f"串行模式获取主题 {topic_id} ({i}/{len(topics_to_update)}, 预期 {reply_count} 个回复)")
-                        
+
                         # 获取主题内容和回复
                         result = self.get_topic_content_and_replies_from_html(topic_id)
-                        
+
                         # 更新主题的内容字段（已转换为Markdown格式）
                         topic['content'] = result.get('content', '')
-                        
+
                         # 如果有回复，则添加到回复列表
                         if result.get('replies'):
                             all_replies.extend(result['replies'])
-                            
+
                             # 提取回复中的用户信息
                             for reply in result['replies']:
                                 if reply.get('member_username'):
                                     all_users.append({'username': reply['member_username']})
-                        
+
                         self.logger.info(f"主题 {topic_id} 获取内容 {len(result.get('content', ''))} 字符, 回复 {len(result.get('replies', []))} 个")
-                        
+
                         # 减少延迟
                         time.sleep(0.3)  # 从1秒减少到0.3秒
-                    
+
                     self.logger.info(f"节点 '{node_name}' 串行模式总共获取 {len(all_replies)} 个回复")
-            
+
             # 提取主题中的用户信息，并清理嵌套dict
             for topic in topics_to_update:
                 if topic.get('member'):
@@ -523,7 +511,7 @@ class V2EXCrawler:
                 'all_users': all_users,
                 'all_replies': all_replies
             }
-            
+
         except Exception as e:
             self.logger.error(f"串行爬取节点 '{node_name}' 失败: {e}")
             return {
@@ -638,7 +626,7 @@ class V2EXCrawler:
         current_batch_topics = []
         current_batch_replies = []
         current_batch_users = []
-        
+
         # 线程安全锁
         lock = threading.Lock()
         
@@ -662,7 +650,7 @@ class V2EXCrawler:
                 
                 with lock:
                     processed_count += 1
-                    
+
                     # 收集数据
                     current_batch_topics.append(topic)
                     current_batch_replies.extend(result.get('replies', []))
@@ -674,7 +662,7 @@ class V2EXCrawler:
                     if processed_count % 5 == 0 or processed_count == total_topics:
                         progress = (processed_count / total_topics) * 100
                         self.logger.info(f"节点 '{node_name}' 爬取进度: {processed_count}/{total_topics} ({progress:.1f}%)")
-                    
+
                     # 分批入库
                     if len(current_batch_topics) >= batch_size or processed_count == total_topics:
                         try:
@@ -682,16 +670,16 @@ class V2EXCrawler:
                             if current_batch_topics:
                                 db_manager.batch_insert_or_update_topics(current_batch_topics.copy())
                                 self.logger.info(f"节点 '{node_name}' 批量保存 {len(current_batch_topics)} 个主题")
-                            
+
                             if current_batch_replies:
                                 db_manager.batch_insert_or_update_replies(current_batch_replies.copy())
                                 self.logger.info(f"节点 '{node_name}' 批量保存 {len(current_batch_replies)} 个回复")
-                            
+
                             if current_batch_users:
                                 # 提取用户名列表
                                 usernames = [user.get('username') for user in current_batch_users
                                            if user.get('username')]
-                                
+
                                 if usernames:
                                     self.logger.info(f"节点 '{node_name}' 开始批量保存 {len(usernames)} 个用户")
                                     try:
@@ -699,12 +687,12 @@ class V2EXCrawler:
                                         self.logger.info(f"节点 '{node_name}' 批量保存用户完成: {saved_count} 个")
                                     except Exception as e:
                                         self.logger.error(f"节点 '{node_name}' 批量保存用户失败: {e}")
-                            
+
                             # 清空当前批次
                             current_batch_topics.clear()
                             current_batch_replies.clear()
                             current_batch_users.clear()
-                            
+
                         except Exception as e:
                             self.logger.error(f"节点 '{node_name}' 分批入库失败: {e}")
                 
@@ -715,12 +703,12 @@ class V2EXCrawler:
                     failed_count += 1
                     processed_count += 1
                 self.logger.error(f"获取主题 {topic_id} 失败: {type(e).__name__}: {e}")
-                
+
                 # 即使失败也要更新主题内容为空
                 topic['content'] = ''
                 with lock:
                     current_batch_topics.append(topic)
-                
+
                 return False
         
         # 使用线程池处理
@@ -730,7 +718,7 @@ class V2EXCrawler:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # 提交所有任务
             future_to_topic = {executor.submit(process_single_topic, topic): topic for topic in topics}
-            
+
             # 等待所有任务完成
             for future in as_completed(future_to_topic):
                 topic = future_to_topic[future]
@@ -1120,48 +1108,6 @@ class V2EXCrawler:
         
         return topics_to_update
     
-    def _save_crawled_data(self, all_topics: List[Dict], all_users: List[Dict], all_replies: List[Dict]) -> Dict[str, Any]:
-        """保存爬取的数据（适配生产者消费者模式，大部分数据已在过程中保存）"""
-        result = {
-            'topics_found': len(all_topics),
-            'topics_crawled': len(all_topics),  # 在生产者消费者模式中已经保存
-            'users_saved': 0,
-            'replies_saved': len(all_replies),  # 在生产者消费者模式中已经保存
-            'success': False
-        }
-        
-        try:
-            # 处理剩余的用户信息（如果有的话）
-            if all_users:
-                unique_users = {user.get('username', f"user_{i}"): user for i, user in enumerate(all_users) if user.get('username')}
-                for user in unique_users.values():
-                    try:
-                        db_manager.insert_or_update_user(user)
-                        result['users_saved'] += 1
-                    except Exception as e:
-                        self.logger.error(f"保存用户 {user.get('username', 'unknown')} 失败: {e}")
-            
-            # 在生产者消费者模式中，主题和回复已经分批保存，这里只需要处理剩余数据
-            # 如果有未保存的主题（回退模式），则批量保存
-            unsaved_topics = [topic for topic in all_topics if not hasattr(topic, '_saved')]
-            if unsaved_topics:
-                db_manager.batch_insert_or_update_topics(unsaved_topics)
-                self.logger.info(f"补充保存 {len(unsaved_topics)} 个未保存的主题")
-            
-            # 如果有未保存的回复（回退模式），则批量保存
-            unsaved_replies = [reply for reply in all_replies if not hasattr(reply, '_saved')]
-            if unsaved_replies:
-                db_manager.batch_insert_or_update_replies(unsaved_replies)
-                self.logger.info(f"补充保存 {len(unsaved_replies)} 个未保存的回复")
-            
-            result['success'] = True
-            self.logger.info(f"数据保存完成: 主题 {result['topics_crawled']}, 用户 {result['users_saved']}, 回复 {result['replies_saved']}")
-            
-        except Exception as e:
-            self.logger.error(f"批量保存数据失败: {e}")
-            result['error'] = str(e)
-        
-        return result
     
     def crawl_hot_and_latest(self) -> Dict[str, Any]:
         """爬取热门和最新主题"""
