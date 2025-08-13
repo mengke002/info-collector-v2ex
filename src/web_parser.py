@@ -136,11 +136,36 @@ class V2EXWebParser:
             return []
         
         topics = []
-        # Mobile layout: topics are in a div.box container, each in a div.cell
-        # The first div.box is the node header, the second one contains the topics.
-        topic_box = soup.select_one('div#Wrapper div.box:nth-of-type(2)')
+        
+        # 更健壮的主题容器查找逻辑
+        topic_box = None
+        wrapper = soup.select_one('div#Wrapper')
+        if not wrapper:
+            self.logger.warning("未找到页面主容器 (div#Wrapper)")
+            return []
+        
+        boxes = wrapper.select('div.box')
+        self.logger.debug(f"找到 {len(boxes)} 个div.box容器")
+        
+        # 查找包含主题的box（通常是第2个，但要验证）
+        for i, box in enumerate(boxes):
+            box_classes = box.get('class', [])
+            topic_links = box.select('a.topic-link')
+            
+            self.logger.debug(f"Box {i+1}: classes={box_classes}, {len(topic_links)} topic-links")
+            
+            # 跳过节点头部box
+            if 'node-header' in box_classes:
+                continue
+                
+            # 找到包含主题链接的box
+            if len(topic_links) > 0:
+                topic_box = box
+                self.logger.debug(f"选择Box {i+1}作为主题容器")
+                break
+        
         if not topic_box:
-            self.logger.info("未找到主题列表容器 (div.box)。")
+            self.logger.info("未找到包含主题的容器")
             return []
 
         topic_cells = topic_box.select('div.cell')
@@ -158,6 +183,8 @@ class V2EXWebParser:
                 topic_data = self._parse_topic_cell(cell, node_name)
                 if topic_data:
                     topics.append(topic_data)
+                else:
+                    self.logger.debug("主题解析返回None，跳过")
             except Exception as e:
                 self.logger.warning(f"解析主题元素失败: {e}")
                 continue
@@ -170,29 +197,41 @@ class V2EXWebParser:
         try:
             title_link = cell.select_one('a.topic-link')
             if not title_link:
+                self.logger.debug("未找到a.topic-link元素")
                 return None
             
             # 提取基本信息
             title = title_link.get_text(strip=True)
             topic_url = title_link.get('href', '')
             topic_id = self._extract_topic_id_from_url(topic_url)
+            
             if not topic_id:
+                self.logger.debug(f"无法从URL提取主题ID: {topic_url}")
+                return None
+            
+            if not title:
+                self.logger.debug(f"主题标题为空: ID={topic_id}")
                 return None
             
             # 查找作者信息 - V2EX作者链接格式是 /member/用户名
             author_username = None
-            author_link = cell.select_one('span.small.fade strong')
+            author_link = cell.select_one('a[href^="/member/"]')
             if author_link:
                 href = author_link.get('href', '')
                 # 从 /member/username 中提取用户名
                 if '/member/' in href:
                     author_username = href.split('/member/')[-1]
             
+            if not author_username:
+                self.logger.debug(f"未找到作者信息: ID={topic_id}")
+            
             # 查找回复数 - 根据分析结果，在 .count_livid 中
             reply_count = 0
             reply_element = cell.select_one('a.count_livid')
-            if reply_element and reply_element.get_text(strip=True).isdigit():
-                reply_count = int(reply_element.get_text(strip=True))
+            if reply_element:
+                reply_text = reply_element.get_text(strip=True)
+                if reply_text.isdigit():
+                    reply_count = int(reply_text)
 
             # Mobile view does not have a reliable timestamp. Default to now.
             created_timestamp = int(datetime.now().timestamp())
@@ -208,14 +247,19 @@ class V2EXWebParser:
                 'member_username': author_username,
                 'replies': reply_count,
                 'last_reply_by': None, # Not available in mobile view
+                'created_timestamp': created_timestamp,
+                'last_touched_timestamp': created_timestamp,
+                'last_modified_timestamp': None,
+                'is_deleted': 0,
+                'content': '',
+                # 保持向后兼容的字段
                 'created': created_timestamp,
                 'last_touched': created_timestamp,
                 'last_modified': None,
-                'deleted': 0,
-                'content': '',
-                'content_rendered': ''
+                'deleted': 0
             }
 
+            self.logger.debug(f"成功解析主题: ID={topic_id}, 标题={title[:30]}...")
             return topic_data
 
         except Exception as e:

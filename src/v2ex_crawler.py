@@ -13,6 +13,9 @@ from fake_useragent import UserAgent
 from bs4 import BeautifulSoup
 import re
 from datetime import datetime
+import html2text
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 from .config import config
 from .database import db_manager
@@ -49,6 +52,12 @@ class V2EXCrawler:
         self.last_request_time = 0
         self.request_count = 0
         self.rate_limit_delay = 1.0
+        
+        # HTML到Markdown转换器
+        self.html_converter = html2text.HTML2Text()
+        self.html_converter.ignore_links = False
+        self.html_converter.ignore_images = False
+        self.html_converter.body_width = 0  # 不限制行宽
     
     def _get_random_headers(self) -> Dict[str, str]:
         """获取随机请求头"""
@@ -102,22 +111,6 @@ class V2EXCrawler:
         actual_delay = delay + random.uniform(0, delay * 0.5)
         time.sleep(actual_delay)
     
-    def get_all_nodes(self) -> List[Dict[str, Any]]:
-        """获取所有节点信息"""
-        self.logger.info("开始获取所有节点信息")
-        
-        url = f"{self.base_api_url}/nodes/all.json"
-        nodes_data = self._make_request(url)
-        
-        if nodes_data:
-            self.logger.info(f"成功获取 {len(nodes_data)} 个节点信息")
-            return nodes_data
-        else:
-            self.logger.error("获取节点信息失败")
-            return []
-    
-
-    
     def get_topic_detail(self, topic_id: int) -> Optional[Dict[str, Any]]:
         """获取主题详情"""
         self.logger.debug(f"获取主题详情: {topic_id}")
@@ -143,13 +136,12 @@ class V2EXCrawler:
             
             if response.status_code != 200:
                 self.logger.warning(f"获取主题页面失败: {topic_id} - 状态码: {response.status_code}")
-                return {'content': '', 'content_rendered': '', 'replies': []}
+                return {'content': '', 'replies': []}
             
             soup = BeautifulSoup(response.content, 'html.parser')
             
             # 解析主题内容
             content = ''
-            content_rendered = ''
             
             # V2EX主题内容通常在 .topic_content 或 .cell 中
             content_div = soup.select_one('.topic_content')
@@ -158,8 +150,8 @@ class V2EXCrawler:
                 content_div = soup.select_one('div.cell:not([id])')
             
             if content_div:
-                content = content_div.get_text(strip=True)
-                content_rendered = str(content_div)
+                # 转换HTML为Markdown
+                content = self._html_to_markdown(str(content_div))
             
             # 解析回复
             replies = []
@@ -178,18 +170,54 @@ class V2EXCrawler:
             
             return {
                 'content': content,
-                'content_rendered': content_rendered,
                 'replies': replies
             }
             
         except Exception as e:
             self.logger.error(f"获取主题 {topic_id} 内容和回复失败: {e}")
-            return {'content': '', 'content_rendered': '', 'replies': []}
+            return {'content': '', 'replies': []}
     
     def get_topic_replies_from_html(self, topic_id: int) -> List[Dict[str, Any]]:
         """通过HTML页面解析获取主题回复（保持向后兼容）"""
         result = self.get_topic_content_and_replies_from_html(topic_id)
         return result['replies']
+    
+    def _html_to_markdown(self, html_content: str) -> str:
+        """将HTML内容转换为Markdown格式"""
+        try:
+            if not html_content or not html_content.strip():
+                return ''
+            
+            # 使用html2text转换
+            markdown_content = self.html_converter.handle(html_content)
+            
+            # 清理多余的空行
+            lines = markdown_content.split('\n')
+            cleaned_lines = []
+            prev_empty = False
+            
+            for line in lines:
+                line = line.strip()
+                if line:
+                    cleaned_lines.append(line)
+                    prev_empty = False
+                elif not prev_empty:
+                    cleaned_lines.append('')
+                    prev_empty = True
+            
+            # 移除开头和结尾的空行
+            while cleaned_lines and not cleaned_lines[0]:
+                cleaned_lines.pop(0)
+            while cleaned_lines and not cleaned_lines[-1]:
+                cleaned_lines.pop()
+            
+            return '\n'.join(cleaned_lines)
+            
+        except Exception as e:
+            self.logger.warning(f"HTML转Markdown失败: {e}")
+            # 如果转换失败，返回纯文本
+            soup = BeautifulSoup(html_content, 'html.parser')
+            return soup.get_text(strip=True)
     
     def _parse_reply_cell(self, cell, topic_id: int, floor: int) -> Optional[Dict[str, Any]]:
         """解析单个回复元素"""
@@ -213,11 +241,11 @@ class V2EXCrawler:
                 if '/member/' in href:
                     username = href.split('/member/')[-1]
             
-            # 提取回复内容
+            # 提取回复内容并转换为Markdown
             content = ""
             content_div = cell.select_one('.reply_content')
             if content_div:
-                content = content_div.get_text(strip=True)
+                content = self._html_to_markdown(str(content_div))
             
             # 提取时间信息
             created_timestamp = None
@@ -246,8 +274,11 @@ class V2EXCrawler:
                 'member_id': None,  # HTML解析无法获取用户ID
                 'member_username': username,
                 'content': content,
-                'content_rendered': content,
                 'reply_floor': floor,
+                'created_timestamp': created_timestamp,
+                'last_modified_timestamp': created_timestamp,
+                'thanks_count': thanks_count,
+                # 保持向后兼容的字段
                 'created': created_timestamp,
                 'last_modified': created_timestamp,
                 'thanks': thanks_count
@@ -287,44 +318,6 @@ class V2EXCrawler:
             return int(datetime.now().timestamp())
     
 
-    
-    def crawl_nodes(self, force_update: bool = False) -> int:
-        """爬取并保存所有节点信息"""
-        # 检查是否需要更新节点信息（默认7天更新一次）
-        if not force_update and db_manager.should_skip_nodes_update():
-            self.logger.info("节点信息最近已更新，跳过节点爬取")
-            return 0
-        
-        self.logger.info("开始爬取节点信息")
-        
-        nodes = self.get_all_nodes()
-        if not nodes:
-            return 0
-        
-        # 批量保存节点，每批100个
-        batch_size = 100
-        success_count = 0
-        
-        for i in range(0, len(nodes), batch_size):
-            batch = nodes[i:i + batch_size]
-            try:
-                db_manager.batch_insert_or_update_nodes(batch)
-                success_count += len(batch)
-                self.logger.info(f"批量保存节点进度: {success_count}/{len(nodes)}")
-            except Exception as e:
-                self.logger.error(f"批量保存节点失败 (批次 {i//batch_size + 1}): {e}")
-                # 如果批量失败，尝试逐个保存
-                for node in batch:
-                    try:
-                        db_manager.insert_or_update_node(node)
-                    except Exception as node_e:
-                        self.logger.error(f"保存节点 {node.get('name', 'unknown')} 失败: {node_e}")
-        
-        # 记录节点更新时间
-        db_manager.update_nodes_last_crawled()
-        
-        self.logger.info(f"成功保存 {success_count}/{len(nodes)} 个节点")
-        return success_count
     
     def crawl_topics_by_nodes(self) -> Dict[str, Any]:
         """按节点爬取主题（统一框架，支持串行和并发）"""
@@ -393,8 +386,20 @@ class V2EXCrawler:
     
     async def _crawl_all_nodes_async(self) -> Dict[str, Any]:
         """并发爬取所有节点"""
-        connector = aiohttp.TCPConnector(limit=20, limit_per_host=10)
-        timeout = aiohttp.ClientTimeout(total=60)
+        connector = aiohttp.TCPConnector(
+            limit=5,           # 总连接数限制
+            limit_per_host=2,  # 每个主机连接数限制
+            ttl_dns_cache=300,
+            use_dns_cache=True,
+            keepalive_timeout=30,
+            enable_cleanup_closed=True
+        )
+        timeout = aiohttp.ClientTimeout(
+            total=120,      # 总超时时间2分钟
+            connect=15,     # 连接超时15秒
+            sock_read=60,   # 读取超时60秒
+            sock_connect=15 # socket连接超时15秒
+        )
         
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
             semaphore = asyncio.Semaphore(self.max_concurrent_nodes)
@@ -449,43 +454,54 @@ class V2EXCrawler:
             topics_to_update = self._filter_topics_to_update(node_topics)
             self.logger.info(f"节点 '{node_name}' 需要更新 {len(topics_to_update)}/{len(node_topics)} 个主题")
             
-            # 3. 获取主题详情和回复（串行）
+            # 3. 获取主题详情和回复（生产者消费者模式，支持分批入库）
             all_replies = []
             all_users = []
             
             fetch_replies = self.crawler_config.get('fetch_replies', True)
             if fetch_replies:
                 # 对所有主题获取详情内容，包括没有回复的主题
-                self.logger.info(f"节点 '{node_name}' 开始获取 {len(topics_to_update)} 个主题的详情内容")
+                self.logger.info(f"节点 '{node_name}' 开始生产者消费者模式爬取 {len(topics_to_update)} 个主题（并发数: {self.max_concurrent_replies}，分批入库）")
                 
-                for i, topic in enumerate(topics_to_update, 1):
-                    topic_id = topic['id']
-                    reply_count = topic.get('replies', 0)
+                # 使用线程池模式获取主题内容和回复
+                try:
+                    updated_topics, all_replies, all_users = self._get_topic_content_and_replies_batch_threaded(
+                        topics_to_update, node_name
+                    )
+                    topics_to_update = updated_topics
                     
-                    self.logger.debug(f"获取主题 {topic_id} 的详情内容 ({i}/{len(topics_to_update)}, 预期 {reply_count} 个回复)")
+                    self.logger.info(f"节点 '{node_name}' 线程池模式完成，总共获取 {len(all_replies)} 个回复，{len(all_users)} 个用户")
                     
-                    # 获取主题内容和回复
-                    result = self.get_topic_content_and_replies_from_html(topic_id)
-                    
-                    # 更新主题的内容字段
-                    topic['content'] = result.get('content', '')
-                    topic['content_rendered'] = result.get('content_rendered', '')
-                    
-                    # 如果有回复，则添加到回复列表
-                    if result.get('replies'):
-                        all_replies.extend(result['replies'])
+                except Exception as e:
+                    self.logger.error(f"节点 '{node_name}' 线程池模式失败，回退到串行模式: {e}")
+                    # 回退到原来的串行方式
+                    for i, topic in enumerate(topics_to_update, 1):
+                        topic_id = topic['id']
+                        reply_count = topic.get('replies', 0)
                         
-                        # 提取回复中的用户信息
-                        for reply in result['replies']:
-                            if reply.get('member_username'):
-                                all_users.append({'username': reply['member_username']})
+                        self.logger.info(f"串行模式获取主题 {topic_id} ({i}/{len(topics_to_update)}, 预期 {reply_count} 个回复)")
+                        
+                        # 获取主题内容和回复
+                        result = self.get_topic_content_and_replies_from_html(topic_id)
+                        
+                        # 更新主题的内容字段（已转换为Markdown格式）
+                        topic['content'] = result.get('content', '')
+                        
+                        # 如果有回复，则添加到回复列表
+                        if result.get('replies'):
+                            all_replies.extend(result['replies'])
+                            
+                            # 提取回复中的用户信息
+                            for reply in result['replies']:
+                                if reply.get('member_username'):
+                                    all_users.append({'username': reply['member_username']})
+                        
+                        self.logger.info(f"主题 {topic_id} 获取内容 {len(result.get('content', ''))} 字符, 回复 {len(result.get('replies', []))} 个")
+                        
+                        # 减少延迟
+                        time.sleep(0.3)  # 从1秒减少到0.3秒
                     
-                    self.logger.debug(f"主题 {topic_id} 获取内容 {len(result.get('content', ''))} 字符, 回复 {len(result.get('replies', []))} 个")
-                    
-                    # 主题间延迟
-                    self._delay_between_requests()
-                
-                self.logger.info(f"节点 '{node_name}' 总共获取 {len(all_replies)} 个回复")
+                    self.logger.info(f"节点 '{node_name}' 串行模式总共获取 {len(all_replies)} 个回复")
             
             # 提取主题中的用户信息，并清理嵌套dict
             for topic in topics_to_update:
@@ -583,20 +599,421 @@ class V2EXCrawler:
                     replies = await self._get_topic_replies_async(session, topic_id)
                     return replies
                 except Exception as e:
-                    self.logger.warning(f"获取主题 {topic_id} 回复失败: {e}")
+                    self.logger.error(f"获取主题 {topic_id} 回复失败: {type(e).__name__}: {e}")
                     return []
         
         tasks = [get_replies_for_topic(topic) for topic in topics]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
         all_replies = []
-        for result in results:
+        failed_count = 0
+        for i, result in enumerate(results):
             if isinstance(result, list):
                 all_replies.extend(result)
             elif isinstance(result, Exception):
-                self.logger.error(f"回复获取任务失败: {result}")
+                failed_count += 1
+                topic_id = topics[i].get('id', 'unknown') if i < len(topics) else 'unknown'
+                self.logger.error(f"主题 {topic_id} 回复获取任务异常: {type(result).__name__}: {result}")
+        
+        if failed_count > 0:
+            self.logger.warning(f"批量获取回复完成，{failed_count}/{len(topics)} 个主题失败")
         
         return all_replies
+    
+    def _get_topic_content_and_replies_batch_threaded(self, topics: List[Dict], node_name: str) -> tuple:
+        """使用线程池批量获取主题内容和回复，支持分批入库"""
+        total_topics = len(topics)
+        processed_count = 0
+        failed_count = 0
+        all_replies = []
+        all_users = []
+        
+        # 分批入库配置
+        batch_size = 10
+        current_batch_topics = []
+        current_batch_replies = []
+        current_batch_users = []
+        
+        # 线程安全锁
+        lock = threading.Lock()
+        
+        def process_single_topic(topic):
+            """处理单个主题的线程函数"""
+            nonlocal processed_count, failed_count
+            
+            topic_id = topic.get('id')
+            try:
+                # 使用同步方法获取内容和回复
+                result = self.get_topic_content_and_replies_from_html(topic_id)
+                
+                # 更新主题的内容字段
+                topic['content'] = result.get('content', '')
+                
+                # 提取回复中的用户信息
+                topic_users = []
+                for reply in result.get('replies', []):
+                    if reply.get('member_username'):
+                        topic_users.append({'username': reply['member_username']})
+                
+                with lock:
+                    processed_count += 1
+                    
+                    # 收集数据
+                    current_batch_topics.append(topic)
+                    current_batch_replies.extend(result.get('replies', []))
+                    current_batch_users.extend(topic_users)
+                    all_replies.extend(result.get('replies', []))
+                    all_users.extend(topic_users)
+                    
+                    # 显示进度
+                    if processed_count % 5 == 0 or processed_count == total_topics:
+                        progress = (processed_count / total_topics) * 100
+                        self.logger.info(f"节点 '{node_name}' 爬取进度: {processed_count}/{total_topics} ({progress:.1f}%)")
+                    
+                    # 分批入库
+                    if len(current_batch_topics) >= batch_size or processed_count == total_topics:
+                        try:
+                            # 保存当前批次的数据
+                            if current_batch_topics:
+                                db_manager.batch_insert_or_update_topics(current_batch_topics.copy())
+                                self.logger.info(f"节点 '{node_name}' 批量保存 {len(current_batch_topics)} 个主题")
+                            
+                            if current_batch_replies:
+                                db_manager.batch_insert_or_update_replies(current_batch_replies.copy())
+                                self.logger.info(f"节点 '{node_name}' 批量保存 {len(current_batch_replies)} 个回复")
+                            
+                            if current_batch_users:
+                                # 提取用户名列表
+                                usernames = [user.get('username') for user in current_batch_users
+                                           if user.get('username')]
+                                
+                                if usernames:
+                                    self.logger.info(f"节点 '{node_name}' 开始批量保存 {len(usernames)} 个用户")
+                                    try:
+                                        saved_count = db_manager.batch_insert_users_by_username(usernames)
+                                        self.logger.info(f"节点 '{node_name}' 批量保存用户完成: {saved_count} 个")
+                                    except Exception as e:
+                                        self.logger.error(f"节点 '{node_name}' 批量保存用户失败: {e}")
+                            
+                            # 清空当前批次
+                            current_batch_topics.clear()
+                            current_batch_replies.clear()
+                            current_batch_users.clear()
+                            
+                        except Exception as e:
+                            self.logger.error(f"节点 '{node_name}' 分批入库失败: {e}")
+                
+                return True
+                
+            except Exception as e:
+                with lock:
+                    failed_count += 1
+                    processed_count += 1
+                self.logger.error(f"获取主题 {topic_id} 失败: {type(e).__name__}: {e}")
+                
+                # 即使失败也要更新主题内容为空
+                topic['content'] = ''
+                with lock:
+                    current_batch_topics.append(topic)
+                
+                return False
+        
+        # 使用线程池处理
+        max_workers = min(self.max_concurrent_replies, 3)  # 限制最大线程数
+        self.logger.info(f"节点 '{node_name}' 开始线程池模式爬取 {total_topics} 个主题（线程数: {max_workers}，分批入库）")
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 提交所有任务
+            future_to_topic = {executor.submit(process_single_topic, topic): topic for topic in topics}
+            
+            # 等待所有任务完成
+            for future in as_completed(future_to_topic):
+                topic = future_to_topic[future]
+                try:
+                    future.result()
+                except Exception as e:
+                    self.logger.error(f"线程处理主题 {topic.get('id')} 异常: {e}")
+        
+        self.logger.info(f"节点 '{node_name}' 线程池爬取完成: 成功 {processed_count - failed_count}/{total_topics}, 失败 {failed_count}, 总回复 {len(all_replies)}")
+        
+        return topics, all_replies, all_users
+
+    async def _get_topic_content_and_replies_batch_async(self, topics: List[Dict], node_name: str) -> tuple:
+        """生产者消费者模式批量异步获取主题内容和回复，支持分批入库"""
+        # 使用更保守的连接配置，避免被V2EX限制
+        connector = aiohttp.TCPConnector(
+            limit=5,           # 总连接数限制
+            limit_per_host=2,  # 每个主机连接数限制
+            ttl_dns_cache=300, # DNS缓存时间
+            use_dns_cache=True,
+            keepalive_timeout=30,
+            enable_cleanup_closed=True
+        )
+        # 设置更宽松的超时配置
+        timeout = aiohttp.ClientTimeout(
+            total=120,      # 总超时时间2分钟
+            connect=15,     # 连接超时15秒
+            sock_read=60,   # 读取超时60秒
+            sock_connect=15 # socket连接超时15秒
+        )
+        
+        # 创建队列用于生产者消费者模式
+        topic_queue = asyncio.Queue(maxsize=self.max_concurrent_replies * 2)  # 队列大小为并发数的2倍
+        result_queue = asyncio.Queue()
+        
+        # 统计信息
+        total_topics = len(topics)
+        processed_count = 0
+        failed_count = 0
+        all_replies = []
+        all_users = []
+        
+        # 分批入库配置
+        batch_size = 10  # 每10个主题入库一次
+        current_batch_topics = []
+        current_batch_replies = []
+        current_batch_users = []
+        
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            
+            # 生产者：将主题放入队列
+            async def producer():
+                for topic in topics:
+                    await topic_queue.put(topic)
+                # 添加结束标记
+                for _ in range(self.max_concurrent_replies):
+                    await topic_queue.put(None)
+            
+            # 消费者：处理主题并获取内容和回复
+            async def consumer(consumer_id: int):
+                nonlocal processed_count, failed_count
+                consumer_processed = 0
+                
+                while True:
+                    topic = await topic_queue.get()
+                    if topic is None:  # 结束标记
+                        break
+                    
+                    topic_id = topic.get('id')
+                    try:
+                        # 增加延迟，避免被V2EX限制
+                        if consumer_processed > 0:
+                            await asyncio.sleep(0.5)  # 每个请求后都延迟0.5秒
+                        
+                        result = await self._get_topic_content_and_replies_async(session, topic_id)
+                        
+                        # 更新主题的内容字段
+                        topic['content'] = result.get('content', '')
+                        
+                        # 提取回复中的用户信息
+                        topic_users = []
+                        for reply in result.get('replies', []):
+                            if reply.get('member_username'):
+                                topic_users.append({'username': reply['member_username']})
+                        
+                        # 将结果放入结果队列
+                        await result_queue.put({
+                            'topic': topic,
+                            'replies': result.get('replies', []),
+                            'users': topic_users,
+                            'success': True
+                        })
+                        
+                        consumer_processed += 1
+                        processed_count += 1
+                        
+                        # 显示进度
+                        if processed_count % 5 == 0 or processed_count == total_topics:
+                            progress = (processed_count / total_topics) * 100
+                            self.logger.info(f"节点 '{node_name}' 爬取进度: {processed_count}/{total_topics} ({progress:.1f}%) - 消费者{consumer_id}已处理{consumer_processed}个")
+                        
+                    except Exception as e:
+                        failed_count += 1
+                        self.logger.error(f"消费者{consumer_id} 获取主题 {topic_id} 失败: {type(e).__name__}: {e}")
+                        
+                        # 即使失败也要放入结果队列，保持计数正确
+                        topic['content'] = ''
+                        await result_queue.put({
+                            'topic': topic,
+                            'replies': [],
+                            'users': [],
+                            'success': False
+                        })
+                        processed_count += 1
+                    
+                    finally:
+                        topic_queue.task_done()
+            
+            # 结果处理器：分批入库
+            async def result_processor():
+                nonlocal current_batch_topics, current_batch_replies, current_batch_users
+                results_processed = 0
+                
+                while results_processed < total_topics:
+                    try:
+                        result = await asyncio.wait_for(result_queue.get(), timeout=10.0)  # 增加等待结果的超时时间
+                        
+                        # 收集数据
+                        current_batch_topics.append(result['topic'])
+                        current_batch_replies.extend(result['replies'])
+                        current_batch_users.extend(result['users'])
+                        all_replies.extend(result['replies'])
+                        all_users.extend(result['users'])
+                        
+                        results_processed += 1
+                        
+                        # 分批入库
+                        if len(current_batch_topics) >= batch_size or results_processed == total_topics:
+                            try:
+                                # 保存当前批次的数据
+                                if current_batch_topics:
+                                    db_manager.batch_insert_or_update_topics(current_batch_topics)
+                                    self.logger.info(f"节点 '{node_name}' 批量保存 {len(current_batch_topics)} 个主题")
+                                
+                                if current_batch_replies:
+                                    db_manager.batch_insert_or_update_replies(current_batch_replies)
+                                    self.logger.info(f"节点 '{node_name}' 批量保存 {len(current_batch_replies)} 个回复")
+                                
+                                if current_batch_users:
+                                    # 去重用户
+                                    unique_users = {user.get('username', f"user_{i}"): user
+                                                  for i, user in enumerate(current_batch_users)
+                                                  if user.get('username')}
+                                    for user in unique_users.values():
+                                        try:
+                                            db_manager.insert_or_update_user(user)
+                                        except Exception as e:
+                                            self.logger.error(f"保存用户 {user.get('username', 'unknown')} 失败: {e}")
+                                    self.logger.info(f"节点 '{node_name}' 批量保存 {len(unique_users)} 个用户")
+                                
+                                # 清空当前批次
+                                current_batch_topics = []
+                                current_batch_replies = []
+                                current_batch_users = []
+                                
+                            except Exception as e:
+                                self.logger.error(f"节点 '{node_name}' 分批入库失败: {e}")
+                        
+                        result_queue.task_done()
+                        
+                    except asyncio.TimeoutError:
+                        self.logger.warning(f"节点 '{node_name}' 等待结果超时，已处理 {results_processed}/{total_topics}")
+                        break
+            
+            # 启动所有任务
+            producer_task = asyncio.create_task(producer())
+            consumer_tasks = [asyncio.create_task(consumer(i)) for i in range(self.max_concurrent_replies)]
+            processor_task = asyncio.create_task(result_processor())
+            
+            # 等待生产者完成
+            await producer_task
+            
+            # 等待所有消费者完成
+            await asyncio.gather(*consumer_tasks)
+            
+            # 等待结果处理器完成
+            await processor_task
+            
+            self.logger.info(f"节点 '{node_name}' 并发爬取完成: 成功 {processed_count - failed_count}/{total_topics}, 失败 {failed_count}, 总回复 {len(all_replies)}")
+            
+            return topics, all_replies, all_users
+    
+    async def _get_topic_content_and_replies_async(self, session: aiohttp.ClientSession, topic_id: int) -> Dict[str, Any]:
+        """异步获取主题内容和回复，带重试机制"""
+        url = f"https://www.v2ex.com/t/{topic_id}"
+        max_retries = 2  # 最多重试2次
+        
+        for attempt in range(max_retries + 1):
+            try:
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'Connection': 'keep-alive',
+                    'Referer': 'https://www.v2ex.com/',
+                    'Cache-Control': 'no-cache',
+                    'Upgrade-Insecure-Requests': '1',
+                    'Sec-Fetch-Dest': 'document',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'same-origin'
+                }
+                
+                timeout = aiohttp.ClientTimeout(
+                    total=120,      # 总超时时间2分钟
+                    connect=15,     # 连接超时15秒
+                    sock_read=60,   # 读取超时60秒
+                    sock_connect=15 # socket连接超时15秒
+                )
+                
+                async with session.get(url, headers=headers, timeout=timeout) as response:
+                    if response.status == 429:  # 被限流
+                        wait_time = (2 ** attempt) * 2 + 1
+                        self.logger.warning(f"主题 {topic_id} 被限流，等待 {wait_time} 秒后重试 (尝试 {attempt + 1}/{max_retries + 1})")
+                        await asyncio.sleep(wait_time)
+                        continue
+                    elif response.status != 200:
+                        self.logger.warning(f"获取主题页面失败: {topic_id} - 状态码: {response.status} (尝试 {attempt + 1}/{max_retries + 1})")
+                        if attempt < max_retries:
+                            await asyncio.sleep(1)
+                            continue
+                        return {'content': '', 'replies': []}
+                    
+                    content = await response.text()
+                    soup = BeautifulSoup(content, 'html.parser')
+                    
+                    # 解析主题内容
+                    topic_content = ''
+                    content_div = soup.select_one('.topic_content')
+                    if not content_div:
+                        content_div = soup.select_one('div.cell:not([id])')
+                    
+                    if content_div:
+                        topic_content = self._html_to_markdown(str(content_div))
+                    
+                    # 解析回复
+                    replies = []
+                    reply_cells = soup.select('div.cell[id^="r_"]')
+                    
+                    for i, cell in enumerate(reply_cells):
+                        try:
+                            reply_data = self._parse_reply_cell(cell, topic_id, i + 1)
+                            if reply_data:
+                                replies.append(reply_data)
+                        except Exception as e:
+                            self.logger.warning(f"解析主题 {topic_id} 第 {i+1} 个回复失败: {e}")
+                            continue
+                    
+                    self.logger.debug(f"主题 {topic_id} 解析到内容 {len(topic_content)} 字符, {len(replies)} 个回复")
+                    
+                    return {
+                        'content': topic_content,
+                        'replies': replies
+                    }
+                    
+            except asyncio.TimeoutError:
+                self.logger.warning(f"异步获取主题 {topic_id} 内容和回复超时 (尝试 {attempt + 1}/{max_retries + 1})")
+                if attempt < max_retries:
+                    await asyncio.sleep(2)  # 超时后等待2秒再重试
+                    continue
+                self.logger.error(f"异步获取主题 {topic_id} 内容和回复超时")
+                return {'content': '', 'replies': []}
+            except aiohttp.ClientError as e:
+                self.logger.warning(f"异步获取主题 {topic_id} 网络错误: {e} (尝试 {attempt + 1}/{max_retries + 1})")
+                if attempt < max_retries:
+                    await asyncio.sleep(1)
+                    continue
+                self.logger.error(f"异步获取主题 {topic_id} 内容和回复网络错误: {e}")
+                return {'content': '', 'replies': []}
+            except Exception as e:
+                self.logger.warning(f"异步获取主题 {topic_id} 失败: {type(e).__name__}: {e} (尝试 {attempt + 1}/{max_retries + 1})")
+                if attempt < max_retries:
+                    await asyncio.sleep(1)
+                    continue
+                self.logger.error(f"异步获取主题 {topic_id} 内容和回复失败: {type(e).__name__}: {e}")
+                return {'content': '', 'replies': []}
+        
+        return {'content': '', 'replies': []}
     
     async def _get_topic_replies_async(self, session: aiohttp.ClientSession, topic_id: int) -> List[Dict[str, Any]]:
         """异步获取主题回复（通过HTML解析）"""
@@ -606,12 +1023,25 @@ class V2EXCrawler:
             await self._rate_limit_async()
             
             headers = {
-                'User-Agent': self.ua.random,
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
                 'Referer': 'https://www.v2ex.com/',
+                'Cache-Control': 'no-cache',
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'same-origin'
             }
             
-            timeout = aiohttp.ClientTimeout(total=self.crawler_config.get('timeout_seconds', 30))
+            timeout = aiohttp.ClientTimeout(
+                total=120,      # 总超时时间2分钟
+                connect=15,     # 连接超时15秒
+                sock_read=60,   # 读取超时60秒
+                sock_connect=15 # socket连接超时15秒
+            )
             
             async with session.get(url, headers=headers, timeout=timeout) as response:
                 if response.status != 200:
@@ -630,14 +1060,20 @@ class V2EXCrawler:
                         if reply_data:
                             replies.append(reply_data)
                     except Exception as e:
-                        self.logger.warning(f"解析回复失败: {e}")
+                        self.logger.warning(f"解析主题 {topic_id} 第 {i+1} 个回复失败: {e}")
                         continue
                 
                 self.logger.debug(f"主题 {topic_id} 解析到 {len(replies)} 个回复")
                 return replies
                 
+        except asyncio.TimeoutError:
+            self.logger.error(f"异步获取主题 {topic_id} 回复超时")
+            return []
+        except aiohttp.ClientError as e:
+            self.logger.error(f"异步获取主题 {topic_id} 回复网络错误: {e}")
+            return []
         except Exception as e:
-            self.logger.error(f"异步获取主题 {topic_id} 回复失败: {e}")
+            self.logger.error(f"异步获取主题 {topic_id} 回复失败: {type(e).__name__}: {e}")
             return []
     
     async def _rate_limit_async(self):
@@ -680,34 +1116,38 @@ class V2EXCrawler:
         return topics_to_update
     
     def _save_crawled_data(self, all_topics: List[Dict], all_users: List[Dict], all_replies: List[Dict]) -> Dict[str, Any]:
-        """保存爬取的数据"""
+        """保存爬取的数据（适配生产者消费者模式，大部分数据已在过程中保存）"""
         result = {
             'topics_found': len(all_topics),
-            'topics_crawled': 0,
+            'topics_crawled': len(all_topics),  # 在生产者消费者模式中已经保存
             'users_saved': 0,
-            'replies_saved': 0,
+            'replies_saved': len(all_replies),  # 在生产者消费者模式中已经保存
             'success': False
         }
         
         try:
-            # 保存用户信息
-            unique_users = {user.get('username', f"user_{i}"): user for i, user in enumerate(all_users) if user.get('username')}
-            for user in unique_users.values():
-                try:
-                    db_manager.insert_or_update_user(user)
-                    result['users_saved'] += 1
-                except Exception as e:
-                    self.logger.error(f"保存用户 {user.get('username', 'unknown')} 失败: {e}")
+            # 处理剩余的用户信息（如果有的话）
+            if all_users:
+                unique_users = {user.get('username', f"user_{i}"): user for i, user in enumerate(all_users) if user.get('username')}
+                for user in unique_users.values():
+                    try:
+                        db_manager.insert_or_update_user(user)
+                        result['users_saved'] += 1
+                    except Exception as e:
+                        self.logger.error(f"保存用户 {user.get('username', 'unknown')} 失败: {e}")
             
-            # 批量保存主题
-            if all_topics:
-                db_manager.batch_insert_or_update_topics(all_topics)
-                result['topics_crawled'] = len(all_topics)
+            # 在生产者消费者模式中，主题和回复已经分批保存，这里只需要处理剩余数据
+            # 如果有未保存的主题（回退模式），则批量保存
+            unsaved_topics = [topic for topic in all_topics if not hasattr(topic, '_saved')]
+            if unsaved_topics:
+                db_manager.batch_insert_or_update_topics(unsaved_topics)
+                self.logger.info(f"补充保存 {len(unsaved_topics)} 个未保存的主题")
             
-            # 批量保存回复
-            if all_replies:
-                db_manager.batch_insert_or_update_replies(all_replies)
-                result['replies_saved'] = len(all_replies)
+            # 如果有未保存的回复（回退模式），则批量保存
+            unsaved_replies = [reply for reply in all_replies if not hasattr(reply, '_saved')]
+            if unsaved_replies:
+                db_manager.batch_insert_or_update_replies(unsaved_replies)
+                self.logger.info(f"补充保存 {len(unsaved_replies)} 个未保存的回复")
             
             result['success'] = True
             self.logger.info(f"数据保存完成: 主题 {result['topics_crawled']}, 用户 {result['users_saved']}, 回复 {result['replies_saved']}")
@@ -724,7 +1164,6 @@ class V2EXCrawler:
         
         all_topics = []
         all_users = []
-        all_nodes = []
         
         try:
             # 获取热门主题
@@ -741,19 +1180,16 @@ class V2EXCrawler:
             unique_topics = {topic['id']: topic for topic in all_topics if topic.get('id')}
             all_topics = list(unique_topics.values())
             
-            # 提取用户和节点信息
+            # 提取用户信息
             for topic in all_topics:
                 if 'member' in topic and topic['member']:
                     all_users.append(topic['member'])
-                if 'node' in topic and topic['node']:
-                    all_nodes.append(topic['node'])
             
             # 保存数据
             result = {
                 'topics_found': len(all_topics),
                 'topics_crawled': 0,
                 'users_saved': 0,
-                'nodes_saved': 0,
                 'success': False
             }
             
@@ -765,15 +1201,6 @@ class V2EXCrawler:
                     result['users_saved'] += 1
                 except Exception as e:
                     self.logger.error(f"保存用户失败: {e}")
-            
-            # 保存节点
-            unique_nodes = {node['id']: node for node in all_nodes if node.get('id')}
-            for node in unique_nodes.values():
-                try:
-                    db_manager.insert_or_update_node(node)
-                    result['nodes_saved'] += 1
-                except Exception as e:
-                    self.logger.error(f"保存节点失败: {e}")
             
             # 保存主题
             if all_topics:
@@ -789,7 +1216,6 @@ class V2EXCrawler:
                 'topics_found': 0,
                 'topics_crawled': 0,
                 'users_saved': 0,
-                'nodes_saved': 0,
                 'success': False,
                 'error': str(e)
             }

@@ -58,11 +58,11 @@ class DatabaseManager:
         
         if 'content' in sanitized and sanitized['content']:
             original = str(sanitized['content'])
-            # TEXT字段最大65535字节，保守估计16000字符
-            max_chars = 16000
+            # 主题内容限制为10000字符
+            max_chars = 10000
             if len(original) > max_chars:
                 sanitized['content'] = original[:max_chars] + "...[内容被截断]"
-                self.logger.warning(f"内容被截断: {len(original)} -> {max_chars} 字符")
+                self.logger.warning(f"主题内容被截断: {len(original)} -> {max_chars} 字符")
         
         # 限制数值字段范围
         if 'replies' in sanitized:
@@ -84,7 +84,10 @@ class DatabaseManager:
                 database=self.db_config.get('database'),
                 charset='utf8mb4',
                 ssl={} if ssl_enabled else None,
-                autocommit=False
+                autocommit=False,
+                connect_timeout=10,  # 连接超时10秒
+                read_timeout=30,     # 读取超时30秒
+                write_timeout=30     # 写入超时30秒
             )
             return connection
         except Exception as e:
@@ -115,25 +118,9 @@ class DatabaseManager:
         """初始化数据库表结构"""
         create_tables_sql = [
             """
-            CREATE TABLE IF NOT EXISTS v2ex_nodes (
-                id INT PRIMARY KEY COMMENT '节点ID',
-                name VARCHAR(50) UNIQUE NOT NULL COMMENT '节点名称',
-                title VARCHAR(100) NOT NULL COMMENT '节点标题',
-                url VARCHAR(500) COMMENT '节点URL',
-                topics_count INT UNSIGNED DEFAULT 0 COMMENT '主题数量',
-                stars INT UNSIGNED DEFAULT 0 COMMENT '收藏数',
-                avatar_url VARCHAR(500) COMMENT '节点头像URL',
-                parent_node_name VARCHAR(50) COMMENT '父节点名称',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '记录创建时间',
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间',
-                
-                INDEX idx_name (name),
-                INDEX idx_parent (parent_node_name)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=COMPRESSED;
-            """,
-            """
             CREATE TABLE IF NOT EXISTS v2ex_users (
-                id INT PRIMARY KEY COMMENT '用户ID',
+                id INT AUTO_INCREMENT PRIMARY KEY COMMENT '自增主键ID',
+                v2ex_id INT UNIQUE COMMENT 'V2EX用户ID',
                 username VARCHAR(50) UNIQUE NOT NULL COMMENT '用户名',
                 url VARCHAR(500) COMMENT '用户主页URL',
                 website VARCHAR(500) COMMENT '个人网站',
@@ -150,6 +137,7 @@ class DatabaseManager:
                 is_pro TINYINT DEFAULT 0 COMMENT '是否为Pro用户',
                 first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '首次采集时间',
                 
+                INDEX idx_v2ex_id (v2ex_id),
                 INDEX idx_username (username),
                 INDEX idx_created (created_timestamp)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=COMPRESSED;
@@ -159,8 +147,7 @@ class DatabaseManager:
                 id INT PRIMARY KEY COMMENT '主题ID',
                 title VARCHAR(500) NOT NULL COMMENT '主题标题',
                 url VARCHAR(500) UNIQUE NOT NULL COMMENT '主题URL',
-                content TEXT COMMENT '主题内容',
-                content_rendered TEXT COMMENT '渲染后的内容',
+                content VARCHAR(25000) COMMENT '主题内容(Markdown格式，最大25000字符)',
                 node_id INT COMMENT '所属节点ID',
                 node_name VARCHAR(50) COMMENT '所属节点名称',
                 member_id INT COMMENT '作者用户ID',
@@ -178,8 +165,7 @@ class DatabaseManager:
                 INDEX idx_created (created_timestamp),
                 INDEX idx_last_touched (last_touched_timestamp),
                 INDEX idx_replies (replies),
-                FOREIGN KEY (node_id) REFERENCES v2ex_nodes(id) ON DELETE SET NULL,
-                FOREIGN KEY (member_id) REFERENCES v2ex_users(id) ON DELETE SET NULL
+                FOREIGN KEY (member_id) REFERENCES v2ex_users(v2ex_id) ON DELETE SET NULL
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=COMPRESSED;
             """,
             """
@@ -188,8 +174,7 @@ class DatabaseManager:
                 topic_id INT NOT NULL COMMENT '所属主题ID',
                 member_id INT COMMENT '回复用户ID',
                 member_username VARCHAR(50) COMMENT '回复用户名',
-                content TEXT COMMENT '回复内容',
-                content_rendered TEXT COMMENT '渲染后的回复内容',
+                content VARCHAR(2000) COMMENT '回复内容(Markdown格式，最大1000字符)',
                 reply_floor SMALLINT UNSIGNED COMMENT '楼层号',
                 created_timestamp INT UNSIGNED NOT NULL COMMENT '回复创建时间戳',
                 last_modified_timestamp INT UNSIGNED COMMENT '最后修改时间戳',
@@ -201,7 +186,7 @@ class DatabaseManager:
                 INDEX idx_created (created_timestamp),
                 INDEX idx_floor (reply_floor),
                 FOREIGN KEY (topic_id) REFERENCES v2ex_topics(id) ON DELETE CASCADE,
-                FOREIGN KEY (member_id) REFERENCES v2ex_users(id) ON DELETE SET NULL
+                FOREIGN KEY (member_id) REFERENCES v2ex_users(v2ex_id) ON DELETE SET NULL
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=COMPRESSED;
             """
         ]
@@ -212,60 +197,45 @@ class DatabaseManager:
             connection.commit()
             self.logger.info("数据库表结构初始化完成")
     
-    def insert_or_update_node(self, node_data: Dict[str, Any]):
-        """插入或更新节点数据"""
-        sql = """
-        INSERT INTO v2ex_nodes (id, name, title, url, topics_count, stars, avatar_url, parent_node_name)
-        VALUES (%(id)s, %(name)s, %(title)s, %(url)s, %(topics)s, %(stars)s, %(avatar_large)s, %(parent_node_name)s)
-        ON DUPLICATE KEY UPDATE
-            title = VALUES(title),
-            url = VALUES(url),
-            topics_count = VALUES(topics_count),
-            stars = VALUES(stars),
-            avatar_url = VALUES(avatar_url),
-            parent_node_name = VALUES(parent_node_name),
-            updated_at = CURRENT_TIMESTAMP
-        """
-        
-        with self.get_cursor() as (cursor, connection):
-            cursor.execute(sql, node_data)
-            connection.commit()
-    
-    def batch_insert_or_update_nodes(self, nodes_data: List[Dict[str, Any]]):
-        """批量插入或更新节点数据"""
-        if not nodes_data:
-            return
-        
-        sql = """
-        INSERT INTO v2ex_nodes (id, name, title, url, topics_count, stars, avatar_url, parent_node_name)
-        VALUES (%(id)s, %(name)s, %(title)s, %(url)s, %(topics)s, %(stars)s, %(avatar_large)s, %(parent_node_name)s)
-        ON DUPLICATE KEY UPDATE
-            title = VALUES(title),
-            url = VALUES(url),
-            topics_count = VALUES(topics_count),
-            stars = VALUES(stars),
-            avatar_url = VALUES(avatar_url),
-            parent_node_name = VALUES(parent_node_name),
-            updated_at = CURRENT_TIMESTAMP
-        """
-        
-        with self.get_cursor() as (cursor, connection):
-            cursor.executemany(sql, nodes_data)
-            connection.commit()
-            self.logger.info(f"批量插入/更新 {len(nodes_data)} 个节点")
-    
     def insert_or_update_user(self, user_data: Dict[str, Any]):
         """插入或更新用户数据"""
         sanitized_data = self._sanitize_user_data(user_data)
         
+        # 如果没有v2ex_id字段，只有username，则使用仅username的插入方式
+        if 'id' not in sanitized_data and 'username' in sanitized_data:
+            # 对于只有username的用户，使用简化的插入方式
+            sql = """
+            INSERT IGNORE INTO v2ex_users (username, first_seen_at)
+            VALUES (%(username)s, %(first_seen_at)s)
+            """
+            
+            if 'first_seen_at' not in sanitized_data:
+                sanitized_data['first_seen_at'] = self.get_beijing_time()
+            
+            # 只保留必要的字段
+            minimal_data = {
+                'username': sanitized_data['username'],
+                'first_seen_at': sanitized_data['first_seen_at']
+            }
+            
+            try:
+                with self.get_cursor() as (cursor, connection):
+                    cursor.execute(sql, minimal_data)
+                    connection.commit()
+                    self.logger.debug(f"插入用户: {minimal_data['username']}")
+            except Exception as e:
+                self.logger.warning(f"插入用户 {minimal_data['username']} 失败: {e}")
+            return
+        
+        # 原有的完整用户数据插入逻辑（将id字段映射为v2ex_id）
         sql = """
         INSERT INTO v2ex_users (
-            id, username, url, website, github, twitter, location, tagline, bio,
-            avatar_mini, avatar_normal, avatar_large, created_timestamp, 
+            v2ex_id, username, url, website, github, twitter, location, tagline, bio,
+            avatar_mini, avatar_normal, avatar_large, created_timestamp,
             last_modified_timestamp, is_pro, first_seen_at
         ) VALUES (
-            %(id)s, %(username)s, %(url)s, %(website)s, %(github)s, %(twitter)s, 
-            %(location)s, %(tagline)s, %(bio)s, %(avatar_mini)s, %(avatar_normal)s, 
+            %(id)s, %(username)s, %(url)s, %(website)s, %(github)s, %(twitter)s,
+            %(location)s, %(tagline)s, %(bio)s, %(avatar_mini)s, %(avatar_normal)s,
             %(avatar_large)s, %(created)s, %(last_modified)s, %(pro)s, %(first_seen_at)s
         ) ON DUPLICATE KEY UPDATE
             url = VALUES(url),
@@ -298,24 +268,69 @@ class DatabaseManager:
             cursor.execute(sql, sanitized_data)
             connection.commit()
     
+    def batch_insert_users_by_username(self, usernames: List[str]):
+        """批量插入只有用户名的用户数据"""
+        if not usernames:
+            return
+        
+        # 去重
+        unique_usernames = list(set(usernames))
+        beijing_time = self.get_beijing_time()
+        
+        # 准备批量数据
+        user_data = []
+        for username in unique_usernames:
+            if username and len(username.strip()) > 0:
+                user_data.append({
+                    'username': username.strip()[:50],  # 限制长度
+                    'first_seen_at': beijing_time
+                })
+        
+        if not user_data:
+            return
+        
+        sql = """
+        INSERT IGNORE INTO v2ex_users (username, first_seen_at)
+        VALUES (%(username)s, %(first_seen_at)s)
+        """
+        
+        try:
+            with self.get_cursor() as (cursor, connection):
+                cursor.executemany(sql, user_data)
+                affected_rows = cursor.rowcount
+                connection.commit()
+                self.logger.info(f"批量插入用户: {affected_rows}/{len(user_data)} 个用户")
+                return affected_rows
+        except Exception as e:
+            self.logger.error(f"批量插入用户失败: {e}")
+            # 如果批量失败，尝试逐个插入
+            success_count = 0
+            for user in user_data:
+                try:
+                    self.insert_or_update_user(user)
+                    success_count += 1
+                except Exception as single_e:
+                    self.logger.warning(f"单个插入用户 {user['username']} 失败: {single_e}")
+            self.logger.info(f"逐个插入用户完成: {success_count}/{len(user_data)}")
+            return success_count
+    
     def insert_or_update_topic(self, topic_data: Dict[str, Any]):
         """插入或更新主题数据"""
         sanitized_data = self._sanitize_topic_data(topic_data)
         
         sql = """
         INSERT INTO v2ex_topics (
-            id, title, url, content, content_rendered, node_id, node_name,
+            id, title, url, content, node_id, node_name,
             member_id, member_username, replies, last_reply_by, created_timestamp,
             last_touched_timestamp, last_modified_timestamp, is_deleted, crawled_at
         ) VALUES (
-            %(id)s, %(title)s, %(url)s, %(content)s, %(content_rendered)s, 
-            %(node_id)s, %(node_name)s, %(member_id)s, %(member_username)s, 
-            %(replies)s, %(last_reply_by)s, %(created)s, %(last_touched)s, 
+            %(id)s, %(title)s, %(url)s, %(content)s,
+            %(node_id)s, %(node_name)s, %(member_id)s, %(member_username)s,
+            %(replies)s, %(last_reply_by)s, %(created)s, %(last_touched)s,
             %(last_modified)s, %(deleted)s, %(crawled_at)s
         ) ON DUPLICATE KEY UPDATE
             title = VALUES(title),
             content = VALUES(content),
-            content_rendered = VALUES(content_rendered),
             replies = VALUES(replies),
             last_reply_by = VALUES(last_reply_by),
             last_touched_timestamp = VALUES(last_touched_timestamp),
@@ -382,18 +397,17 @@ class DatabaseManager:
         
         sql = """
         INSERT INTO v2ex_topics (
-            id, title, url, content, content_rendered, node_id, node_name,
+            id, title, url, content, node_id, node_name,
             member_id, member_username, replies, last_reply_by, created_timestamp,
             last_touched_timestamp, last_modified_timestamp, is_deleted, crawled_at
         ) VALUES (
-            %(id)s, %(title)s, %(url)s, %(content)s, %(content_rendered)s, 
-            %(node_id)s, %(node_name)s, %(member_id)s, %(member_username)s, 
-            %(replies)s, %(last_reply_by)s, %(created)s, %(last_touched)s, 
+            %(id)s, %(title)s, %(url)s, %(content)s,
+            %(node_id)s, %(node_name)s, %(member_id)s, %(member_username)s,
+            %(replies)s, %(last_reply_by)s, %(created)s, %(last_touched)s,
             %(last_modified)s, %(deleted)s, %(crawled_at)s
         ) ON DUPLICATE KEY UPDATE
             title = VALUES(title),
             content = VALUES(content),
-            content_rendered = VALUES(content_rendered),
             replies = VALUES(replies),
             last_reply_by = VALUES(last_reply_by),
             last_touched_timestamp = VALUES(last_touched_timestamp),
@@ -452,7 +466,6 @@ class DatabaseManager:
     def get_stats(self) -> Dict[str, Any]:
         """获取数据库统计信息"""
         stats_sql = [
-            ("nodes_count", "SELECT COUNT(*) as count FROM v2ex_nodes"),
             ("users_count", "SELECT COUNT(*) as count FROM v2ex_users"),
             ("topics_count", "SELECT COUNT(*) as count FROM v2ex_topics"),
             ("today_topics", """
@@ -481,27 +494,6 @@ class DatabaseManager:
         
         return stats
     
-    def should_skip_nodes_update(self, days_threshold: int = 7) -> bool:
-        """检查是否应该跳过节点更新（默认7天内不重复更新）"""
-        sql = """
-        SELECT MAX(updated_at) as last_update 
-        FROM v2ex_nodes 
-        WHERE updated_at > DATE_SUB(NOW(), INTERVAL %s DAY)
-        """
-        
-        with self.get_cursor() as (cursor, connection):
-            cursor.execute(sql, (days_threshold,))
-            result = cursor.fetchone()
-            return result and result['last_update'] is not None
-    
-    def update_nodes_last_crawled(self):
-        """更新节点最后爬取时间"""
-        sql = "UPDATE v2ex_nodes SET updated_at = NOW() WHERE id > 0 LIMIT 1"
-        
-        with self.get_cursor() as (cursor, connection):
-            cursor.execute(sql)
-            connection.commit()
-    
     def get_topics_need_update(self, node_names: List[str], hours_threshold: int = 1) -> List[int]:
         """获取需要更新的主题ID列表（基于最后活跃时间）"""
         if not node_names:
@@ -524,27 +516,48 @@ class DatabaseManager:
             results = cursor.fetchall()
             return [row['id'] for row in results]
     
+    def _sanitize_reply_data(self, reply_data: Dict[str, Any]) -> Dict[str, Any]:
+        """清理和验证回复数据"""
+        sanitized = reply_data.copy()
+        
+        if 'content' in sanitized and sanitized['content']:
+            original = str(sanitized['content'])
+            # 回复内容限制为1000字符
+            max_chars = 1000
+            if len(original) > max_chars:
+                sanitized['content'] = original[:max_chars] + "...[回复被截断]"
+                self.logger.warning(f"回复内容被截断: {len(original)} -> {max_chars} 字符")
+        
+        if 'member_username' in sanitized and sanitized['member_username']:
+            original = str(sanitized['member_username'])
+            sanitized['member_username'] = original[:50]
+            if len(original) > 50:
+                self.logger.warning(f"回复用户名被截断")
+        
+        return sanitized
+    
     def insert_or_update_reply(self, reply_data: Dict[str, Any]):
         """插入或更新回复数据"""
+        sanitized_data = self._sanitize_reply_data(reply_data)
+        
         sql = """
         INSERT INTO v2ex_replies (
-            id, topic_id, member_id, member_username, content, content_rendered,
+            id, topic_id, member_id, member_username, content,
             reply_floor, created_timestamp, last_modified_timestamp, thanks_count, crawled_at
         ) VALUES (
-            %(id)s, %(topic_id)s, %(member_id)s, %(member_username)s, %(content)s, %(content_rendered)s,
+            %(id)s, %(topic_id)s, %(member_id)s, %(member_username)s, %(content)s,
             %(reply_floor)s, %(created)s, %(last_modified)s, %(thanks)s, %(crawled_at)s
         ) ON DUPLICATE KEY UPDATE
             content = VALUES(content),
-            content_rendered = VALUES(content_rendered),
             thanks_count = VALUES(thanks_count),
             crawled_at = VALUES(crawled_at)
         """
         
-        if 'crawled_at' not in reply_data:
-            reply_data['crawled_at'] = self.get_beijing_time()
+        if 'crawled_at' not in sanitized_data:
+            sanitized_data['crawled_at'] = self.get_beijing_time()
         
         with self.get_cursor() as (cursor, connection):
-            cursor.execute(sql, reply_data)
+            cursor.execute(sql, sanitized_data)
             connection.commit()
     
     def batch_insert_or_update_replies(self, replies_data: List[Dict[str, Any]]):
@@ -553,29 +566,35 @@ class DatabaseManager:
             return
         
         beijing_time = self.get_beijing_time()
+        sanitized_replies = []
+        
         for reply in replies_data:
-            if 'crawled_at' not in reply:
-                reply['crawled_at'] = beijing_time
+            # 清理和验证回复数据
+            sanitized = self._sanitize_reply_data(reply)
+            
+            if 'crawled_at' not in sanitized:
+                sanitized['crawled_at'] = beijing_time
             
             # 处理嵌套的member信息，避免数据库写入错误
-            if 'member' in reply and isinstance(reply['member'], dict):
-                if 'member_id' not in reply:
-                    reply['member_id'] = reply['member'].get('id')
-                if 'member_username' not in reply:
-                    reply['member_username'] = reply['member'].get('username')
+            if 'member' in sanitized and isinstance(sanitized['member'], dict):
+                if 'member_id' not in sanitized:
+                    sanitized['member_id'] = sanitized['member'].get('id')
+                if 'member_username' not in sanitized:
+                    sanitized['member_username'] = sanitized['member'].get('username')
                 # 移除嵌套dict
-                del reply['member']
+                del sanitized['member']
+            
+            sanitized_replies.append(sanitized)
         
         sql = """
         INSERT INTO v2ex_replies (
-            id, topic_id, member_id, member_username, content, content_rendered,
+            id, topic_id, member_id, member_username, content,
             reply_floor, created_timestamp, last_modified_timestamp, thanks_count, crawled_at
         ) VALUES (
-            %(id)s, %(topic_id)s, %(member_id)s, %(member_username)s, %(content)s, %(content_rendered)s,
+            %(id)s, %(topic_id)s, %(member_id)s, %(member_username)s, %(content)s,
             %(reply_floor)s, %(created)s, %(last_modified)s, %(thanks)s, %(crawled_at)s
         ) ON DUPLICATE KEY UPDATE
             content = VALUES(content),
-            content_rendered = VALUES(content_rendered),
             thanks_count = VALUES(thanks_count),
             crawled_at = VALUES(crawled_at)
         """
@@ -584,14 +603,14 @@ class DatabaseManager:
         batch_size = 500
         success_count = 0
         
-        for i in range(0, len(replies_data), batch_size):
-            batch = replies_data[i:i + batch_size]
+        for i in range(0, len(sanitized_replies), batch_size):
+            batch = sanitized_replies[i:i + batch_size]
             try:
                 with self.get_cursor() as (cursor, connection):
                     cursor.executemany(sql, batch)
                     connection.commit()
                     success_count += len(batch)
-                    self.logger.debug(f"批量保存回复进度: {success_count}/{len(replies_data)}")
+                    self.logger.debug(f"批量保存回复进度: {success_count}/{len(sanitized_replies)}")
             except Exception as e:
                 self.logger.error(f"批量保存回复失败 (批次 {i//batch_size + 1}): {e}")
                 # 如果批量失败，尝试逐个保存
@@ -602,7 +621,7 @@ class DatabaseManager:
                     except Exception as reply_e:
                         self.logger.error(f"保存回复 {reply.get('id', 'unknown')} 失败: {reply_e}")
         
-        self.logger.info(f"批量插入/更新 {success_count}/{len(replies_data)} 个回复")
+        self.logger.info(f"批量插入/更新 {success_count}/{len(sanitized_replies)} 个回复")
 
 
 # 全局数据库管理实例

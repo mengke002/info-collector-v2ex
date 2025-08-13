@@ -45,8 +45,6 @@ def main():
                        help='数据保留天数（仅用于cleanup任务）')
     parser.add_argument('--output', choices=['json', 'text'], default='text',
                        help='输出格式')
-    parser.add_argument('--force-nodes', action='store_true',
-                       help='强制更新节点信息（忽略时间限制）')
     
     args = parser.parse_args()
     
@@ -57,7 +55,7 @@ def main():
     
     # 执行对应任务
     if args.task == 'crawl':
-        result = scheduler.run_crawl_task(force_update_nodes=args.force_nodes)
+        result = scheduler.run_crawl_task()
     elif args.task == 'cleanup':
         result = scheduler.run_cleanup_task(args.retention_days)
     elif args.task == 'stats':
@@ -91,7 +89,6 @@ def print_result(result: dict, task_type: str):
     
     if task_type == 'crawl':
         print(f"✅ 爬取任务完成")
-        print(f"   节点保存: {result.get('nodes_saved', 0)} 个")
         print(f"   发现主题: {result.get('topics_found', 0)} 个")
         print(f"   成功爬取: {result.get('topics_crawled', 0)} 个")
         print(f"   用户保存: {result.get('users_saved', 0)} 个")

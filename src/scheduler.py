@@ -23,16 +23,13 @@ class Scheduler:
         beijing_time = utc_time + timedelta(hours=8)
         return beijing_time.replace(tzinfo=None)
     
-    def run_crawl_task(self, force_update_nodes: bool = False) -> Dict[str, Any]:
+    def run_crawl_task(self) -> Dict[str, Any]:
         """执行爬取任务（增量更新）"""
         self.logger.info("开始执行增量爬取任务")
         
         try:
             # 初始化数据库
             db_manager.init_database()
-            
-            # 爬取节点信息（默认7天更新一次，除非强制更新）
-            nodes_result = crawler.crawl_nodes(force_update=force_update_nodes)
             
             # 爬取目标节点的主题（网页解析 + 详情获取）
             nodes_topics_result = crawler.crawl_topics_by_nodes()
@@ -47,7 +44,6 @@ class Scheduler:
             
             result = {
                 'success': True,
-                'nodes_saved': nodes_result,
                 'topics_found': total_topics_found,
                 'topics_crawled': total_topics_crawled,
                 'users_saved': total_users_saved,
