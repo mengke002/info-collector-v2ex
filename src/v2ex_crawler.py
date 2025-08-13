@@ -505,7 +505,7 @@ class V2EXCrawler:
                 self.logger.error(f"获取主题 {topic_id} 失败: {type(e).__name__}: {e}")
                 topic['content'] = ''
 
-        max_workers = min(self.max_concurrent_replies, 3)
+        max_workers = min(self.max_concurrent_replies, 5)
         self.logger.info(f"节点 '{node_name}' 开始线程池模式爬取 {total_topics} 个主题（线程数: {max_workers}，分批入库）")
         
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
