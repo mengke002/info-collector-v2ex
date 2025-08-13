@@ -57,12 +57,8 @@ class DatabaseManager:
                 self.logger.warning(f"URL被截断")
         
         if 'content' in sanitized and sanitized['content']:
-            original = str(sanitized['content'])
-            # 主题内容限制为10000字符
-            max_chars = 10000
-            if len(original) > max_chars:
-                sanitized['content'] = original[:max_chars] + "...[内容被截断]"
-                self.logger.warning(f"主题内容被截断: {len(original)} -> {max_chars} 字符")
+            # Per user request, removed the 10000 character limit for topic content.
+            pass
         
         # 限制数值字段范围
         if 'replies' in sanitized:
@@ -448,8 +444,8 @@ class DatabaseManager:
         
         if 'content' in sanitized and sanitized['content']:
             original = str(sanitized['content'])
-            # 回复内容限制为1000字符
-            max_chars = 1000
+            # 回复内容限制为3000字符，与数据库表结构一致
+            max_chars = 3000
             if len(original) > max_chars:
                 sanitized['content'] = original[:max_chars] + "...[回复被截断]"
                 self.logger.warning(f"回复内容被截断: {len(original)} -> {max_chars} 字符")
