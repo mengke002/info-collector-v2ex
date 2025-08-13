@@ -29,7 +29,7 @@ class Config:
         """
         # 1. 优先检查环境变量
         env_value = os.getenv(env_var)
-        if env_value is not None:
+        if env_value:
             try:
                 return value_type(env_value)
             except (ValueError, TypeError):
