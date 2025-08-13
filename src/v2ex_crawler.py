@@ -43,7 +43,7 @@ class V2EXCrawler:
         self.session.headers.update({
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
+            # 'Accept-Encoding': 'gzip, deflate, br',
             'Connection': 'keep-alive',
             'Cache-Control': 'no-cache'
         })
@@ -138,7 +138,9 @@ class V2EXCrawler:
                 self.logger.warning(f"获取主题页面失败: {topic_id} - 状态码: {response.status_code}")
                 return {'content': '', 'replies': []}
             
-            soup = BeautifulSoup(response.content, 'html.parser')
+            # 显式设置编码为utf-8，避免乱码问题
+            response.encoding = 'utf-8'
+            soup = BeautifulSoup(response.text, 'html.parser')
             
             # 解析主题内容
             content = ''
