@@ -150,7 +150,8 @@ class Config:
             'api_key': self._get_config_value('llm', 'openai_api_key', 'OPENAI_API_KEY', None),
             'model': self._get_config_value('llm', 'openai_model', 'OPENAI_MODEL', 'gpt-3.5-turbo'),
             'base_url': self._get_config_value('llm', 'openai_base_url', 'OPENAI_BASE_URL', 'https://api.openai.com/v1'),
-            'max_content_length': self._get_config_value('llm', 'max_content_length', 'LLM_MAX_CONTENT_LENGTH', 50000, int)
+            'max_content_length': self._get_config_value('llm', 'max_content_length', 'LLM_MAX_CONTENT_LENGTH', 50000, int),
+            'max_parallel_reports': self._get_config_value('llm', 'max_parallel_reports', 'LLM_MAX_PARALLEL_REPORTS', 4, int)
         }
     
     def get_analysis_config(self) -> Dict[str, Any]:

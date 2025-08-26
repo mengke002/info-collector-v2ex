@@ -5,6 +5,7 @@ V2EX数据采集调度器
 import logging
 from typing import Dict, Any, Optional
 from datetime import datetime, timezone, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .v2ex_crawler import crawler
 from .database import db_manager
@@ -199,23 +200,39 @@ class Scheduler:
             all_reports = []
             node_list = [node.strip() for node in nodes.split(',')] if nodes else []
             
-            # 如果指定了节点，则为每个节点生成报告
+            # 如果指定了节点，则并行处理
             if node_list:
                 self.logger.info(f"将为 {len(node_list)} 个指定节点生成报告: {node_list}")
-                for node_name in node_list:
-                    if not node_name:
-                        continue
-                    self.logger.info(f"--- 开始为节点 '{node_name}' 生成报告 ---")
-                    report_result = report_generator.generate_node_report(
-                        node_name=node_name,
-                        hours_back=hours_back,
-                        report_type=report_type
-                    )
-                    all_reports.append(report_result)
-                    if report_result.get('success'):
-                        self.logger.info(f"--- 节点 '{node_name}' 报告生成成功 ---")
-                    else:
-                        self.logger.error(f"--- 节点 '{node_name}' 报告生成失败: {report_result.get('error')} ---")
+                
+                # 从配置获取最大并行数
+                max_workers = config.get_llm_config().get('max_parallel_reports', 4)
+                self.logger.info(f"使用最大并行数: {max_workers}")
+
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    future_to_node = {
+                        executor.submit(
+                            report_generator.generate_node_report,
+                            node_name=node_name,
+                            hours_back=hours_back,
+                            report_type=report_type
+                        ): node_name
+                        for node_name in node_list if node_name
+                    }
+                    
+                    self.logger.info(f"已提交 {len(future_to_node)} 个节点报告任务进行并行处理。")
+
+                    for future in as_completed(future_to_node):
+                        node_name = future_to_node[future]
+                        try:
+                            report_result = future.result()
+                            all_reports.append(report_result)
+                            if report_result.get('success'):
+                                self.logger.info(f"--- 节点 '{node_name}' 报告生成成功 ---")
+                            else:
+                                self.logger.error(f"--- 节点 '{node_name}' 报告生成失败: {report_result.get('error')} ---")
+                        except Exception as exc:
+                            self.logger.error(f"--- 节点 '{node_name}' 报告生成时发生意外错误: {exc} ---", exc_info=True)
+                            all_reports.append({'success': False, 'error': str(exc), 'node_name': node_name})
                 
                 # 按用户要求，额外生成一份全站报告
                 self.logger.info("--- 开始生成附加的全站报告 ---")
