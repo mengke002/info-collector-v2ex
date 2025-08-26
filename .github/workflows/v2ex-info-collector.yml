@@ -76,6 +76,9 @@ jobs:
         DB_PORT: ${{ secrets.DB_PORT }}
         DB_SSL_MODE: ${{ secrets.DB_SSL_MODE }}
         TARGETS: ${{ secrets.TARGETS }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+        OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
 
         # --- Optional Crawler Configuration ---
         CRAWLER_DELAY_SECONDS: ${{ secrets.CRAWLER_DELAY_SECONDS }}
@@ -117,6 +120,9 @@ jobs:
         DB_PORT: ${{ secrets.DB_PORT }}
         DB_SSL_MODE: ${{ secrets.DB_SSL_MODE }}
         TARGETS: ${{ secrets.TARGETS }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+        OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
 
         # --- Optional Configuration ---
         DATA_RETENTION_DAYS: ${{ secrets.DATA_RETENTION_DAYS }}
@@ -151,6 +157,9 @@ jobs:
         DB_PORT: ${{ secrets.DB_PORT }}
         DB_SSL_MODE: ${{ secrets.DB_SSL_MODE }}
         TARGETS: ${{ secrets.TARGETS }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+        OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
 
         # --- Optional Configuration ---
         LOGGING_LOG_LEVEL: ${{ secrets.LOGGING_LOG_LEVEL }}
@@ -185,6 +194,9 @@ jobs:
         DB_PORT: ${{ secrets.DB_PORT }}
         DB_SSL_MODE: ${{ secrets.DB_SSL_MODE }}
         TARGETS: ${{ secrets.TARGETS }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+        OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
 
         # --- Optional Analysis Configuration ---
         ANALYSIS_REPLY_WEIGHT: ${{ secrets.ANALYSIS_REPLY_WEIGHT }}
@@ -222,6 +234,9 @@ jobs:
         DB_PORT: ${{ secrets.DB_PORT }}
         DB_SSL_MODE: ${{ secrets.DB_SSL_MODE }}
         TARGETS: ${{ secrets.TARGETS }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+        OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
 
         # --- Optional Analysis Configuration ---
         ANALYSIS_REPLY_WEIGHT: ${{ secrets.ANALYSIS_REPLY_WEIGHT }}
@@ -232,7 +247,7 @@ jobs:
       
   report:
     runs-on: ubuntu-latest
-    if: github.event.schedule == '0 */3 * * *' || (github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'report')
+    if: github.event.schedule == '0 8-22/2 * * *' || (github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'report')
     
     steps:
     - name: Checkout code
@@ -259,7 +274,7 @@ jobs:
             --output json
         else
           # Scheduled run: report on a predefined set of nodes + global
-          python main.py --task report --nodes "qna,jobs,create,tech" --hours-back 24 --output json
+          python main.py --task report --nodes "qna,jobs,create,openai,ideas,business,programmer" --hours-back 24 --output json
         fi
       env:
         # --- Required Secrets ---
