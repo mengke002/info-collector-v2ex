@@ -240,21 +240,36 @@ class Scheduler:
 
             # 整理最终结果
             successful_reports = [r for r in all_reports if r.get('success')]
-            failed_reports = [r for r in all_reports if not r.get('success')]
+            
+            # 区分硬失败和软失败（无内容）
+            hard_failed_reports = []
+            soft_failed_reports = []
+            for r in all_reports:
+                if not r.get('success'):
+                    error_msg = r.get('error', '')
+                    if '无热门内容' in error_msg or '无热门主题' in error_msg:
+                        soft_failed_reports.append(r)
+                    else:
+                        hard_failed_reports.append(r)
 
             final_result = {
-                'success': len(failed_reports) == 0,
+                # 只有在没有硬失败时，任务才被认为是成功的
+                'success': len(hard_failed_reports) == 0,
                 'total_reports': len(all_reports),
                 'successful_reports': len(successful_reports),
-                'failed_reports': len(failed_reports),
+                'hard_failed_reports': len(hard_failed_reports),
+                'soft_failed_reports': len(soft_failed_reports),
                 'reports': all_reports,
                 'timestamp': self.get_beijing_time()
             }
 
             if final_result['success']:
-                self.logger.info(f"所有 {len(all_reports)} 份报告均已成功生成。")
+                self.logger.info(f"报告生成任务完成。成功: {len(successful_reports)}, "
+                               f"无内容跳过: {len(soft_failed_reports)}。")
             else:
-                self.logger.warning(f"报告生成任务部分或全部失败。成功: {len(successful_reports)}, 失败: {len(failed_reports)}")
+                self.logger.warning(f"报告生成任务部分或全部失败。成功: {len(successful_reports)}, "
+                               f"硬失败: {len(hard_failed_reports)}, "
+                               f"无内容跳过: {len(soft_failed_reports)}。")
 
             # 为了兼容旧的单报告输出，如果只有一个报告，则返回该报告的详细信息
             if len(all_reports) == 1:
