@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.12
 """
 V2EX数据采集系统
 主执行脚本
@@ -39,10 +39,16 @@ def main():
     setup_logging()
     
     parser = argparse.ArgumentParser(description='V2EX数据采集系统')
-    parser.add_argument('--task', choices=['crawl', 'cleanup', 'stats', 'full'], 
+    parser.add_argument('--task', choices=['crawl', 'cleanup', 'stats', 'analysis', 'report', 'full'], 
                        default='crawl', help='要执行的任务类型')
     parser.add_argument('--retention-days', type=int, 
                        help='数据保留天数（仅用于cleanup任务）')
+    parser.add_argument('--hours-back', type=int, default=24,
+                       help='分析或报告的回溯小时数（默认24小时）')
+    parser.add_argument('--nodes', type=str,
+                       help='指定一个或多个节点名称（用逗号分隔），用于report任务。若不指定，则生成全站报告。')
+    parser.add_argument('--report-type', choices=['hotspot', 'trend', 'summary'], 
+                       default='hotspot', help='报告类型（默认hotspot）')
     parser.add_argument('--output', choices=['json', 'text'], default='text',
                        help='输出格式')
     
@@ -60,6 +66,14 @@ def main():
         result = scheduler.run_cleanup_task(args.retention_days)
     elif args.task == 'stats':
         result = scheduler.run_stats_task()
+    elif args.task == 'analysis':
+        result = scheduler.run_analysis_task(args.hours_back)
+    elif args.task == 'report':
+        result = scheduler.run_report_task(
+            nodes=args.nodes,
+            hours_back=args.hours_back,
+            report_type=args.report_type
+        )
     elif args.task == 'full':
         result = scheduler.run_full_maintenance()
     else:
@@ -112,6 +126,20 @@ def print_result(result: dict, task_type: str):
         if stats.get('oldest_activity'):
             print(f"   最旧数据: {stats['oldest_activity']}")
     
+    elif task_type == 'analysis':
+        print(f"✅ 数据分析完成")
+        print(f"   分析主题: {result.get('analyzed_topics', 0)} 个")
+        print(f"   更新感谢数: {result.get('updated_thanks', 0)} 个")
+        print(f"   更新热度分数: {result.get('updated_scores', 0)} 个")
+    
+    elif task_type == 'report':
+        print(f"✅ 报告生成完成")
+        print(f"   报告标题: {result.get('report_title', '')}")
+        print(f"   分析主题: {result.get('topics_analyzed', 0)} 个")
+        print(f"   节点/范围: {result.get('node_name', '全站')}")
+        if 'report_id' in result:
+            print(f"   报告 ID: {result['report_id']}")
+    
     elif task_type == 'full':
         results = result.get('results', {})
         print(f"✅ 完整维护任务完成")
@@ -120,6 +148,16 @@ def print_result(result: dict, task_type: str):
         crawl_result = results.get('crawl', {})
         if crawl_result.get('success'):
             print(f"   爬取: 发现 {crawl_result.get('topics_found', 0)} 个主题，成功 {crawl_result.get('topics_crawled', 0)} 个")
+        
+        # 分析结果
+        analysis_result = results.get('analysis', {})
+        if analysis_result.get('success'):
+            print(f"   分析: 分析 {analysis_result.get('analyzed_topics', 0)} 个主题")
+        
+        # 报告结果
+        report_result = results.get('report', {})
+        if report_result.get('success'):
+            print(f"   报告: {report_result.get('report_title', '报告生成成功')}")
         
         # 清理结果
         cleanup_result = results.get('cleanup', {})

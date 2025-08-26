@@ -2,10 +2,12 @@ name: V2EX Info Collector
 
 on:
   schedule:
-    # 每30分钟执行一次增量更新
+    # 每30分钟运行一次爬取任务
     - cron: '*/30 * * * *'
-    # 每天北京时间 6:00 执行完整更新
-    - cron: '0 22 * * *'
+    # 每3小时运行一次智能分析报告任务
+    - cron: '0 */3 * * *'
+    # 每2天凌晨2点运行清理任务
+    - cron: '0 2 */2 * *'
   workflow_dispatch:
     inputs:
       task:
@@ -17,22 +19,43 @@ on:
         - crawl
         - cleanup
         - stats
+        - analysis
+        - report
         - full
       retention_days:
         description: '数据保留天数（仅cleanup任务）'
         required: false
         type: number
         default: 90
+      nodes:
+        description: '指定节点（逗号分隔，如qna,jobs），不填则仅生成全站报告'
+        required: false
+        type: string
+      report_type:
+        description: '报告类型（仅report任务）'
+        required: false
+        default: 'hotspot'
+        type: choice
+        options:
+        - hotspot
+        - trend
+        - summary
+      hours_back:
+        description: '分析回溯小时数（analysis/report任务）'
+        required: false
+        type: number
+        default: 24
 
 jobs:
   crawl:
     runs-on: ubuntu-latest
+    if: github.event.schedule == '*/30 * * * *' || (github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'crawl')
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
       
-    - name: Set up Python
+    - name: Set up Python 3.12
       uses: actions/setup-python@v4
       with:
         python-version: '3.12'
@@ -43,16 +66,265 @@ jobs:
         pip install -r requirements.txt
         
     - name: Run crawler
+      run: python main.py --task crawl --output json
       env:
-        # 数据库配置
+        # --- Required Secrets ---
         DB_HOST: ${{ secrets.DB_HOST }}
-        DB_PORT: ${{ secrets.DB_PORT }}
         DB_USER: ${{ secrets.DB_USER }}
         DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
         DB_NAME: ${{ secrets.DB_NAME }}
+        DB_PORT: ${{ secrets.DB_PORT }}
         DB_SSL_MODE: ${{ secrets.DB_SSL_MODE }}
+        TARGETS: ${{ secrets.TARGETS }}
+
+        # --- Optional Crawler Configuration ---
+        CRAWLER_DELAY_SECONDS: ${{ secrets.CRAWLER_DELAY_SECONDS }}
+        CRAWLER_MAX_RETRIES: ${{ secrets.CRAWLER_MAX_RETRIES }}
+        CRAWLER_TIMEOUT_SECONDS: ${{ secrets.CRAWLER_TIMEOUT_SECONDS }}
+        CRAWLER_MAX_PAGES_PER_NODE: ${{ secrets.CRAWLER_MAX_PAGES_PER_NODE }}
+        CRAWLER_FETCH_REPLIES: ${{ secrets.CRAWLER_FETCH_REPLIES }}
+        CRAWLER_MAX_CONCURRENT_NODES: ${{ secrets.CRAWLER_MAX_CONCURRENT_NODES }}
+        CRAWLER_MAX_CONCURRENT_REPLIES: ${{ secrets.CRAWLER_MAX_CONCURRENT_REPLIES }}
+        DATA_RETENTION_DAYS: ${{ secrets.DATA_RETENTION_DAYS }}
+        LOGGING_LOG_LEVEL: ${{ secrets.LOGGING_LOG_LEVEL }}
+      
+  cleanup:
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '0 2 */2 * *' || (github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'cleanup')
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
         
-        # 爬虫配置
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Run cleanup
+      run: python main.py --task cleanup --retention-days ${{ github.event.inputs.retention_days || 90 }} --output json
+      env:
+        # --- Required Secrets ---
+        DB_HOST: ${{ secrets.DB_HOST }}
+        DB_USER: ${{ secrets.DB_USER }}
+        DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        DB_NAME: ${{ secrets.DB_NAME }}
+        DB_PORT: ${{ secrets.DB_PORT }}
+        DB_SSL_MODE: ${{ secrets.DB_SSL_MODE }}
+        TARGETS: ${{ secrets.TARGETS }}
+
+        # --- Optional Configuration ---
+        DATA_RETENTION_DAYS: ${{ secrets.DATA_RETENTION_DAYS }}
+        LOGGING_LOG_LEVEL: ${{ secrets.LOGGING_LOG_LEVEL }}
+      
+  stats:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'stats'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Get stats
+      run: python main.py --task stats --output json
+      env:
+        # --- Required Secrets ---
+        DB_HOST: ${{ secrets.DB_HOST }}
+        DB_USER: ${{ secrets.DB_USER }}
+        DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        DB_NAME: ${{ secrets.DB_NAME }}
+        DB_PORT: ${{ secrets.DB_PORT }}
+        DB_SSL_MODE: ${{ secrets.DB_SSL_MODE }}
+        TARGETS: ${{ secrets.TARGETS }}
+
+        # --- Optional Configuration ---
+        LOGGING_LOG_LEVEL: ${{ secrets.LOGGING_LOG_LEVEL }}
+      
+  analysis:
+    runs-on: ubuntu-latest
+    needs: crawl
+    if: github.event.schedule == '*/30 * * * *'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Run hotness analysis
+      run: python main.py --task analysis --output json
+      env:
+        # --- Required Secrets ---
+        DB_HOST: ${{ secrets.DB_HOST }}
+        DB_USER: ${{ secrets.DB_USER }}
+        DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        DB_NAME: ${{ secrets.DB_NAME }}
+        DB_PORT: ${{ secrets.DB_PORT }}
+        DB_SSL_MODE: ${{ secrets.DB_SSL_MODE }}
+        TARGETS: ${{ secrets.TARGETS }}
+
+        # --- Optional Analysis Configuration ---
+        ANALYSIS_REPLY_WEIGHT: ${{ secrets.ANALYSIS_REPLY_WEIGHT }}
+        ANALYSIS_THANKS_WEIGHT: ${{ secrets.ANALYSIS_THANKS_WEIGHT }}
+        ANALYSIS_TIME_DECAY_HOURS: ${{ secrets.ANALYSIS_TIME_DECAY_HOURS }}
+        ANALYSIS_MAX_HOTNESS_SCORE: ${{ secrets.ANALYSIS_MAX_HOTNESS_SCORE }}
+        LOGGING_LOG_LEVEL: ${{ secrets.LOGGING_LOG_LEVEL }}
+      
+  manual-analysis:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'analysis'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Run hotness analysis
+      run: python main.py --task analysis --hours-back ${{ github.event.inputs.hours_back || 24 }} --output json
+      env:
+        # --- Required Secrets ---
+        DB_HOST: ${{ secrets.DB_HOST }}
+        DB_USER: ${{ secrets.DB_USER }}
+        DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        DB_NAME: ${{ secrets.DB_NAME }}
+        DB_PORT: ${{ secrets.DB_PORT }}
+        DB_SSL_MODE: ${{ secrets.DB_SSL_MODE }}
+        TARGETS: ${{ secrets.TARGETS }}
+
+        # --- Optional Analysis Configuration ---
+        ANALYSIS_REPLY_WEIGHT: ${{ secrets.ANALYSIS_REPLY_WEIGHT }}
+        ANALYSIS_THANKS_WEIGHT: ${{ secrets.ANALYSIS_THANKS_WEIGHT }}
+        ANALYSIS_TIME_DECAY_HOURS: ${{ secrets.ANALYSIS_TIME_DECAY_HOURS }}
+        ANALYSIS_MAX_HOTNESS_SCORE: ${{ secrets.ANALYSIS_MAX_HOTNESS_SCORE }}
+        LOGGING_LOG_LEVEL: ${{ secrets.LOGGING_LOG_LEVEL }}
+      
+  report:
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '0 */3 * * *' || (github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'report')
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Run intelligent analysis report
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          # Manual run: use nodes from input, if provided
+          python main.py --task report \
+            --hours-back ${{ github.event.inputs.hours_back || 24 }} \
+            --report-type ${{ github.event.inputs.report_type || 'hotspot' }} \
+            ${{ github.event.inputs.nodes && format('--nodes "{0}"', github.event.inputs.nodes) || '' }} \
+            --output json
+        else
+          # Scheduled run: report on a predefined set of nodes + global
+          python main.py --task report --nodes "qna,jobs,create,tech" --hours-back 24 --output json
+        fi
+      env:
+        # --- Required Secrets ---
+        DB_HOST: ${{ secrets.DB_HOST }}
+        DB_USER: ${{ secrets.DB_USER }}
+        DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        DB_NAME: ${{ secrets.DB_NAME }}
+        DB_PORT: ${{ secrets.DB_PORT }}
+        DB_SSL_MODE: ${{ secrets.DB_SSL_MODE }}
+        TARGETS: ${{ secrets.TARGETS }}
+
+        # --- LLM API Keys (required for report generation) ---
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        
+        # --- Optional LLM Configuration ---
+        OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+        OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+        LLM_MAX_CONTENT_LENGTH: ${{ secrets.LLM_MAX_CONTENT_LENGTH }}
+
+        # --- Optional Analysis Configuration ---
+        ANALYSIS_REPLY_WEIGHT: ${{ secrets.ANALYSIS_REPLY_WEIGHT }}
+        ANALYSIS_THANKS_WEIGHT: ${{ secrets.ANALYSIS_THANKS_WEIGHT }}
+        ANALYSIS_TIME_DECAY_HOURS: ${{ secrets.ANALYSIS_TIME_DECAY_HOURS }}
+        ANALYSIS_MAX_HOTNESS_SCORE: ${{ secrets.ANALYSIS_MAX_HOTNESS_SCORE }}
+        LOGGING_LOG_LEVEL: INFO
+      
+  full:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'full'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Run full maintenance
+      run: python main.py --task full --output json
+      env:
+        # --- Required Secrets ---
+        DB_HOST: ${{ secrets.DB_HOST }}
+        DB_USER: ${{ secrets.DB_USER }}
+        DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        DB_NAME: ${{ secrets.DB_NAME }}
+        DB_PORT: ${{ secrets.DB_PORT }}
+        DB_SSL_MODE: ${{ secrets.DB_SSL_MODE }}
+        TARGETS: ${{ secrets.TARGETS }}
+
+        # --- LLM API Keys (required for report generation in full task) ---
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        
+        # --- Optional LLM Configuration ---
+        OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+        OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+        LLM_MAX_CONTENT_LENGTH: ${{ secrets.LLM_MAX_CONTENT_LENGTH }}
+
+        # --- Optional Crawler Configuration ---
         CRAWLER_DELAY_SECONDS: ${{ secrets.CRAWLER_DELAY_SECONDS }}
         CRAWLER_MAX_RETRIES: ${{ secrets.CRAWLER_MAX_RETRIES }}
         CRAWLER_TIMEOUT_SECONDS: ${{ secrets.CRAWLER_TIMEOUT_SECONDS }}
@@ -61,26 +333,12 @@ jobs:
         CRAWLER_MAX_CONCURRENT_NODES: ${{ secrets.CRAWLER_MAX_CONCURRENT_NODES }}
         CRAWLER_MAX_CONCURRENT_REPLIES: ${{ secrets.CRAWLER_MAX_CONCURRENT_REPLIES }}
         
-        # 数据保留配置
+        # --- Optional Analysis Configuration ---
+        ANALYSIS_REPLY_WEIGHT: ${{ secrets.ANALYSIS_REPLY_WEIGHT }}
+        ANALYSIS_THANKS_WEIGHT: ${{ secrets.ANALYSIS_THANKS_WEIGHT }}
+        ANALYSIS_TIME_DECAY_HOURS: ${{ secrets.ANALYSIS_TIME_DECAY_HOURS }}
+        ANALYSIS_MAX_HOTNESS_SCORE: ${{ secrets.ANALYSIS_MAX_HOTNESS_SCORE }}
+        
+        # --- Other Configuration ---
         DATA_RETENTION_DAYS: ${{ secrets.DATA_RETENTION_DAYS }}
-        
-        # 日志配置
-        LOGGING_LOG_LEVEL: ${{ secrets.LOGGING_LOG_LEVEL }}
-        
-        # 目标节点配置
-        TARGETS: ${{ secrets.TARGETS }}
-        
-      run: |
-        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-          if [ -n "${{ github.event.inputs.retention_days }}" ]; then
-            python main.py --task ${{ github.event.inputs.task }} --retention-days ${{ github.event.inputs.retention_days }}
-          else
-            python main.py --task ${{ github.event.inputs.task }}
-          fi
-        elif [ "${{ github.event.schedule }}" = "0 22 * * *" ]; then
-          # 每天6点执行完整更新
-          python main.py --task full
-        else
-          # 每30分钟执行增量更新
-          python main.py --task crawl
-        fi
+        LOGGING_LOG_LEVEL: INFO

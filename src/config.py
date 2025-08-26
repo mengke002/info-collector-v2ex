@@ -143,6 +143,25 @@ class Config:
             pass
         
         return targets
+    
+    def get_llm_config(self) -> Dict[str, Any]:
+        """获取LLM配置, 并映射到通用键名"""
+        return {
+            'api_key': self._get_config_value('llm', 'openai_api_key', 'OPENAI_API_KEY', None),
+            'model': self._get_config_value('llm', 'openai_model', 'OPENAI_MODEL', 'gpt-3.5-turbo'),
+            'base_url': self._get_config_value('llm', 'openai_base_url', 'OPENAI_BASE_URL', 'https://api.openai.com/v1'),
+            'max_content_length': self._get_config_value('llm', 'max_content_length', 'LLM_MAX_CONTENT_LENGTH', 50000, int)
+        }
+    
+    def get_analysis_config(self) -> Dict[str, Any]:
+        """获取分析配置"""
+        return {
+            'reply_weight': self._get_config_value('analysis', 'reply_weight', 'ANALYSIS_REPLY_WEIGHT', 5.0, float),
+            'thanks_weight': self._get_config_value('analysis', 'thanks_weight', 'ANALYSIS_THANKS_WEIGHT', 3.0, float),
+            'time_decay_hours': self._get_config_value('analysis', 'time_decay_hours', 'ANALYSIS_TIME_DECAY_HOURS', 168, int),
+            'max_hotness_score': self._get_config_value('analysis', 'max_hotness_score', 'ANALYSIS_MAX_HOTNESS_SCORE', 999999.0, float)
+        }
+
 
 # 创建一个全局配置实例
 config = Config()
