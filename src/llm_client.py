@@ -28,7 +28,7 @@ class LLMClient:
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
             },
-            timeout=180.0 
+            timeout=360.0 
         )
         self.logger.info(f"LLM客户端初始化成功 - Model: {self.model}, Base URL: {self.base_url}")
 
@@ -43,6 +43,8 @@ class LLMClient:
         Returns:
             分析结果字典
         """
+        full_response_content = ""
+        chunk_count = 0
         try:
             final_prompt = prompt_template.format(content=content)
             
@@ -58,9 +60,6 @@ class LLMClient:
                 "stream": True,
                 "temperature": 0.3,
             }
-
-            full_response_content = ""
-            chunk_count = 0
             
             self.logger.info("开始streaming响应处理...")
             with self.http_client.stream("POST", "/chat/completions", json=request_data) as response:
@@ -91,7 +90,22 @@ class LLMClient:
                 'provider': 'custom_llm',
                 'model': self.model
             }
-
+        except httpx.RemoteProtocolError as e:
+            self.logger.warning(f"LLM连接被提前关闭，但已接收部分数据: {e}")
+            if full_response_content:
+                self.logger.info(f"将使用已接收的部分内容({len(full_response_content)}字符)作为结果。")
+                return {
+                    'success': True,
+                    'partial': True,
+                    'analysis': full_response_content,
+                    'error': f"Incomplete response from LLM: {e}",
+                    'provider': 'custom_llm',
+                    'model': self.model
+                }
+            else:
+                error_msg = f"LLM客户端连接错误，未收到任何数据: {e}"
+                self.logger.error(error_msg, exc_info=True)
+                return {'success': False, 'error': error_msg}
         except httpx.HTTPStatusError as e:
             error_body = e.response.text
             error_msg = f"LLM API请求失败: {e.response.status_code} - {error_body}"

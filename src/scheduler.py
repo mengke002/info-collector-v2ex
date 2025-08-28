@@ -264,7 +264,7 @@ class Scheduler:
             for r in all_reports:
                 if not r.get('success'):
                     error_msg = r.get('error', '')
-                    if '无热门内容' in error_msg or '无热门主题' in error_msg:
+                    if '无热门内容' in error_msg or '无热门主题' in error_msg or '部分结果' in error_msg:
                         soft_failed_reports.append(r)
                     else:
                         hard_failed_reports.append(r)

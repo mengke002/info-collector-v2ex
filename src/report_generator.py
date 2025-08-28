@@ -341,7 +341,7 @@ class V2EXReportGenerator:
         
         report_id = self.db.insert_report(report_data)
         
-        return {
+        final_result = {
             'success': True,
             'report_id': report_id,
             'node_name': node_name,
@@ -353,6 +353,12 @@ class V2EXReportGenerator:
             'analysis_model': llm_result.get('model'),
             'generated_at': report_data['generated_at']
         }
+
+        if llm_result.get('partial'):
+            final_result['success'] = False
+            final_result['error'] = "部分结果：LLM连接中断"
+        
+        return final_result
     
     def _generate_markdown_report(self, node_name: str, analysis_result: Dict[str, Any],
                                 hot_topics_data: List[Dict[str, Any]], start_time: datetime,
@@ -401,6 +407,14 @@ class V2EXReportGenerator:
         report_lines.extend([
             "",
             f"📊 **统计摘要**: 本报告分析了 {len(hot_topics_data)} 个热门主题",
+            ""
+        ])
+
+        if analysis_result.get('partial'):
+            report_lines.append("")
+            report_lines.append("*注意：由于与分析引擎的连接意外中断，此报告可能不完整。*")
+
+        report_lines.extend([
             "",
             "*本报告由AI自动生成，仅供参考*"
         ])
