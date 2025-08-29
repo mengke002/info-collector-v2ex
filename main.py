@@ -34,6 +34,57 @@ def get_beijing_time():
     return beijing_time.replace(tzinfo=None)
 
 
+def truncate_json_output(result: dict, max_length: int = 2000) -> str:
+    """
+    截取JSON输出，避免在日志中暴露过多敏感信息
+    
+    Args:
+        result: 要输出的结果字典
+        max_length: 最大输出长度（字符数）
+    
+    Returns:
+        截取后的JSON字符串
+    """
+    # 创建一个副本，用于安全输出
+    safe_result = result.copy()
+    
+    # 处理报告相关的敏感字段
+    def process_report_data(data):
+        if isinstance(data, dict):
+            processed = data.copy()
+            # 如果包含完整报告内容，用预览版本替换
+            if 'report_content' in processed and 'report_content_preview' in processed:
+                processed['report_content'] = processed['report_content_preview']
+                del processed['report_content_preview']  # 删除预览字段，避免冗余
+            
+            # 递归处理嵌套的字典和列表
+            for key, value in processed.items():
+                if isinstance(value, (dict, list)):
+                    processed[key] = process_report_data(value)
+            return processed
+        elif isinstance(data, list):
+            return [process_report_data(item) for item in data]
+        else:
+            return data
+    
+    safe_result = process_report_data(safe_result)
+    
+    full_json = json.dumps(safe_result, indent=2, ensure_ascii=False, default=str)
+    
+    if len(full_json) <= max_length:
+        return full_json
+    
+    # 截取前面部分，并添加截断提示
+    truncated = full_json[:max_length]
+    # 找到最后一个完整的行
+    last_newline = truncated.rfind('\n')
+    if last_newline > 0:
+        truncated = truncated[:last_newline]
+    
+    truncated += f"\n... [输出被截断，完整内容长度: {len(full_json)} 字符，仅显示前 {len(truncated)} 字符]"
+    return truncated
+
+
 def main():
     """主函数"""
     setup_logging()
@@ -82,7 +133,7 @@ def main():
     
     # 输出结果
     if args.output == 'json':
-        print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+        print(truncate_json_output(result))
     else:
         print_result(result, args.task)
     

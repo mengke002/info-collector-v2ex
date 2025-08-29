@@ -27,6 +27,28 @@ class V2EXReportGenerator:
         """获取当前北京时间"""
         return datetime.now(timezone.utc) + timedelta(hours=8)
     
+    def _truncate_content_for_logging(self, content: str, max_length: int = 300) -> str:
+        """
+        为日志记录截取内容，避免暴露过多敏感信息
+        
+        Args:
+            content: 要截取的内容
+            max_length: 最大长度
+            
+        Returns:
+            截取后的内容
+        """
+        if len(content) <= max_length:
+            return content
+        
+        truncated = content[:max_length]
+        # 找到最后一个完整的行或句子
+        last_newline = truncated.rfind('\n')
+        if last_newline > max_length // 2:  # 如果找到了合理位置的换行符
+            truncated = truncated[:last_newline]
+        
+        return f"{truncated}... [内容被截断，总长度: {len(content)} 字符]"
+    
     def _get_hotspot_prompt_template(self) -> str:
         """获取热点分析的“超级提示词”模板"""
         return """你是一位为顶级技术公司服务的资深行业分析师。你的任务是分析以下来自V2EX社区的、已编号的原始讨论材料，并为技术决策者撰写一份循序渐进、可追溯来源的情报简报。
@@ -349,6 +371,7 @@ class V2EXReportGenerator:
             'topics_analyzed': len(hot_topics_data),
             'report_title': report_title,
             'report_content': markdown_report,
+            'report_content_preview': self._truncate_content_for_logging(markdown_report, 300),
             'analysis_provider': llm_result.get('provider'),
             'analysis_model': llm_result.get('model'),
             'generated_at': report_data['generated_at']
