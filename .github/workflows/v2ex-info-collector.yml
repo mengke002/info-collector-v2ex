@@ -290,6 +290,9 @@ jobs:
 
         # --- LLM API Keys (required for report generation) ---
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+        # --- Report Configuration from Input ---
+        HOURS_BACK: ${{ github.event.inputs.hours_back }}
         
         # --- Optional LLM Configuration ---
         OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}

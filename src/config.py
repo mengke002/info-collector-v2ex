@@ -163,6 +163,12 @@ class Config:
             'max_hotness_score': self._get_config_value('analysis', 'max_hotness_score', 'ANALYSIS_MAX_HOTNESS_SCORE', 999999.0, float)
         }
 
+    def get_report_config(self) -> Dict[str, Any]:
+        """获取报告配置"""
+        return {
+            'hours_back': self._get_config_value('report', 'hours_back', 'HOURS_BACK', 48, int)
+        }
+
 
 # 创建一个全局配置实例
 config = Config()

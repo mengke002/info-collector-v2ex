@@ -94,8 +94,9 @@ def main():
                        default='crawl', help='要执行的任务类型')
     parser.add_argument('--retention-days', type=int, 
                        help='数据保留天数（仅用于cleanup任务）')
-    parser.add_argument('--hours-back', type=int, default=24,
-                       help='分析或报告的回溯小时数（默认24小时）')
+    report_config = config.get_report_config()
+    parser.add_argument('--hours-back', type=int, default=report_config['hours_back'],
+                       help=f"分析或报告的回溯小时数（默认: {report_config['hours_back']}小时）")
     parser.add_argument('--nodes', type=str,
                        help='指定一个或多个节点名称（用逗号分隔），用于report任务。若不指定，则生成全站报告。')
     parser.add_argument('--report-type', choices=['hotspot', 'trend', 'summary'], 
