@@ -34,7 +34,7 @@ def get_beijing_time():
     return beijing_time.replace(tzinfo=None)
 
 
-def truncate_json_output(result: dict, max_length: int = 2000) -> str:
+def truncate_json_output(result: dict, max_length: int = 50000) -> str:
     """
     截取JSON输出，避免在日志中暴露过多敏感信息
     
