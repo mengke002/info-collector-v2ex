@@ -243,7 +243,7 @@ class V2EXReportGenerator:
                 'node_name': node_name
             }
     
-    def generate_global_report(self, hours_back: int = 24, 
+    def generate_global_report(self, hours_back: int = 48, 
                              report_type: str = 'hotspot') -> Dict[str, Any]:
         """
         生成全站热点报告

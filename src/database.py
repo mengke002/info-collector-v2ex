@@ -731,7 +731,7 @@ class DatabaseManager:
         Args:
             node_name: 节点名称，None表示全站
             limit: 返回主题数量限制
-            period_hours: 时间范围（小时）
+            period_hours: 时间范围（小时），基于主题创建时间
             
         Returns:
             热门主题列表，按热度分数降序排列
@@ -742,7 +742,7 @@ class DatabaseManager:
             sql = """
             SELECT * FROM v2ex_topics 
             WHERE node_name = %s 
-            AND last_touched_timestamp >= %s
+            AND created_timestamp >= %s
             AND hotness_score > 0
             ORDER BY hotness_score DESC, last_touched_timestamp DESC
             LIMIT %s
@@ -751,7 +751,7 @@ class DatabaseManager:
         else:
             sql = """
             SELECT * FROM v2ex_topics 
-            WHERE last_touched_timestamp >= %s
+            WHERE created_timestamp >= %s
             AND hotness_score > 0
             ORDER BY hotness_score DESC, last_touched_timestamp DESC
             LIMIT %s
