@@ -9,12 +9,12 @@ import json
 import logging
 from datetime import datetime, timezone, timedelta
 
+from src.config import config
 from src.scheduler import scheduler
 
 
 def setup_logging():
     """设置日志配置"""
-    from src.config import config
     log_config = config.get_logging_config()
     
     logging.basicConfig(
