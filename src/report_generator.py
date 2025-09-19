@@ -8,6 +8,7 @@ from datetime import datetime, timezone, timedelta
 
 from .database import db_manager
 from .llm_client import llm_client
+from .config import config
 
 
 class V2EXReportGenerator:
@@ -17,9 +18,10 @@ class V2EXReportGenerator:
         self.logger = logging.getLogger(__name__)
         self.db = db_manager
         self.llm = llm_client
-        
+
         # 报告配置
-        self.top_topics_per_node = 30
+        report_config = config.get_report_config()
+        self.top_topics_per_node = report_config.get('top_topics_per_node', 50)
         self.top_replies_per_topic = 10
         self.max_content_length = 50000
     
@@ -387,7 +389,7 @@ class V2EXReportGenerator:
         }
         
         report_id = self.db.insert_report(report_data)
-        
+
         final_result = {
             'success': True,
             'report_id': report_id,
@@ -402,10 +404,48 @@ class V2EXReportGenerator:
             'generated_at': report_data['generated_at']
         }
 
+        # 尝试推送到Notion
+        try:
+            from .notion_client import v2ex_notion_client
+
+            # 格式化Notion标题
+            beijing_time = self.get_beijing_time()
+            time_str = beijing_time.strftime('%H:%M')
+            notion_title = f"[{time_str}] {node_name}节点热点报告 ({len(hot_topics_data)}个主题)"
+
+            self.logger.info(f"开始推送报告到Notion: {notion_title}")
+
+            notion_result = v2ex_notion_client.create_report_page(
+                report_title=notion_title,
+                report_content=markdown_report,
+                report_date=beijing_time
+            )
+
+            if notion_result.get('success'):
+                self.logger.info(f"报告成功推送到Notion: {notion_result.get('page_url')}")
+                final_result['notion_push'] = {
+                    'success': True,
+                    'page_url': notion_result.get('page_url'),
+                    'path': notion_result.get('path')
+                }
+            else:
+                self.logger.warning(f"推送到Notion失败: {notion_result.get('error')}")
+                final_result['notion_push'] = {
+                    'success': False,
+                    'error': notion_result.get('error')
+                }
+
+        except Exception as e:
+            self.logger.warning(f"推送到Notion时出错: {e}")
+            final_result['notion_push'] = {
+                'success': False,
+                'error': str(e)
+            }
+
         if llm_result.get('partial'):
             final_result['success'] = False
             final_result['error'] = "部分结果：LLM连接中断"
-        
+
         return final_result
     
     def _generate_markdown_report(self, node_name: str, analysis_result: Dict[str, Any],

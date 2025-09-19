@@ -102,9 +102,9 @@ class Config:
         
         # 3. 使用默认值
         default_targets = {
-            'jobs': '酷工作',
+            #'jobs': '酷工作',
             'create': '分享创造',
-            'openai': 'OpenAI',
+            #'openai': 'OpenAI',
             'ideas': '奇思妙想',
             'business': '商业模式',
             'qna': '问与答',
@@ -166,7 +166,21 @@ class Config:
     def get_report_config(self) -> Dict[str, Any]:
         """获取报告配置"""
         return {
-            'hours_back': self._get_config_value('report', 'hours_back', 'HOURS_BACK', 48, int)
+            'hours_back': self._get_config_value('report', 'hours_back', 'HOURS_BACK', 48, int),
+            'top_topics_per_node': self._get_config_value(
+                'report',
+                'top_topics_per_node',
+                'REPORT_TOP_TOPICS_PER_NODE',
+                50,
+                int
+            )
+        }
+
+    def get_notion_config(self) -> Dict[str, Any]:
+        """获取Notion配置"""
+        return {
+            'integration_token': self._get_config_value('notion', 'integration_token', 'NOTION_INTEGRATION_TOKEN', None),
+            'parent_page_id': self._get_config_value('notion', 'parent_page_id', 'NOTION_PARENT_PAGE_ID', None)
         }
 
 

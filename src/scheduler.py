@@ -178,8 +178,8 @@ class Scheduler:
                 'timestamp': self.get_beijing_time()
             }
     
-    def run_report_task(self, nodes: str = None, hours_back: int = 24, 
-                       report_type: str = 'hotspot') -> Dict[str, Any]:
+    def run_report_task(self, nodes: str = None, hours_back: int = 24,
+                       report_type: str = 'hotspot', include_global: bool = True) -> Dict[str, Any]:
         """
         执行报告生成任务
         
@@ -187,7 +187,8 @@ class Scheduler:
             nodes: 节点名称字符串（用逗号分隔），None或空表示只生成全站报告
             hours_back: 报告回溯时间（小时）
             report_type: 报告类型 ('hotspot', 'trend', 'summary')
-            
+            include_global: 是否额外生成全站报告
+
         Returns:
             报告生成结果
         """
@@ -234,26 +235,29 @@ class Scheduler:
                             self.logger.error(f"--- 节点 '{node_name}' 报告生成时发生意外错误: {exc} ---", exc_info=True)
                             all_reports.append({'success': False, 'error': str(exc), 'node_name': node_name})
                 
-                # 按用户要求，额外生成一份全站报告
-                self.logger.info("--- 开始生成附加的全站报告 ---")
-                global_report_result = report_generator.generate_global_report(
-                    hours_back=hours_back,
-                    report_type=report_type
-                )
-                all_reports.append(global_report_result)
-                if global_report_result.get('success'):
-                    self.logger.info("--- 全站报告生成成功 ---")
-                else:
-                    self.logger.error(f"--- 全站报告生成失败: {global_report_result.get('error')} ---")
+                if include_global:
+                    self.logger.info("--- 开始生成附加的全站报告 ---")
+                    global_report_result = report_generator.generate_global_report(
+                        hours_back=hours_back,
+                        report_type=report_type
+                    )
+                    all_reports.append(global_report_result)
+                    if global_report_result.get('success'):
+                        self.logger.info("--- 全站报告生成成功 ---")
+                    else:
+                        self.logger.error(f"--- 全站报告生成失败: {global_report_result.get('error')} ---")
 
             else:
-                # 未指定节点，只生成全站报告
-                self.logger.info("--- 未指定节点，仅生成全站报告 ---")
-                global_report_result = report_generator.generate_global_report(
-                    hours_back=hours_back,
-                    report_type=report_type
-                )
-                all_reports.append(global_report_result)
+                if include_global:
+                    # 未指定节点，仅生成全站报告
+                    self.logger.info("--- 未指定节点，仅生成全站报告 ---")
+                    global_report_result = report_generator.generate_global_report(
+                        hours_back=hours_back,
+                        report_type=report_type
+                    )
+                    all_reports.append(global_report_result)
+                else:
+                    self.logger.info("未指定节点且已跳过全站报告，任务无可执行项")
 
             # 整理最终结果
             successful_reports = [r for r in all_reports if r.get('success')]

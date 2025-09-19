@@ -103,6 +103,8 @@ def main():
                        default='hotspot', help='报告类型（默认hotspot）')
     parser.add_argument('--output', choices=['json', 'text'], default='text',
                        help='输出格式')
+    parser.add_argument('--skip-global', action='store_true',
+                       help='仅针对指定节点生成报告，跳过全站报告')
     
     args = parser.parse_args()
     
@@ -124,7 +126,8 @@ def main():
         result = scheduler.run_report_task(
             nodes=args.nodes,
             hours_back=args.hours_back,
-            report_type=args.report_type
+            report_type=args.report_type,
+            include_global=not args.skip_global
         )
     elif args.task == 'full':
         result = scheduler.run_full_maintenance()
