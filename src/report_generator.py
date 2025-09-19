@@ -511,7 +511,7 @@ class V2EXReportGenerator:
         report_lines = [
             f"# {report_title}",
             "",
-            f"*报告生成时间: {generate_time}*",
+            f"*报告生成时间: {generate_time}*  ",
             f"*数据范围: {start_str} - {end_str}*",
             "",
             "---",
@@ -527,8 +527,10 @@ class V2EXReportGenerator:
         # 生成来源清单
         for i, topic_data in enumerate(hot_topics_data, 1):
             topic_info = topic_data['topic']
+            # 将标题中的方括号替换为中文方括号，避免干扰Markdown链接解析
+            clean_title = topic_info['title'].replace('[', '【').replace(']', '】')
             report_lines.append(
-                f"- **[T{i}]**: [{topic_info['title']}]({topic_info['url']}) "
+                f"- **[T{i}]**: [{clean_title}]({topic_info['url']}) "
                 f"({topic_info['node_name']} | {topic_info['replies']}回复 | {topic_info['total_thanks_count']}感谢)"
             )
         

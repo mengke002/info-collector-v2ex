@@ -268,7 +268,12 @@ class Scheduler:
             for r in all_reports:
                 if not r.get('success'):
                     error_msg = r.get('error', '')
-                    if '无热门内容' in error_msg or '无热门主题' in error_msg or '部分结果' in error_msg:
+                    # 扩大软失败的判断条件，包括更多"无内容"相关的情况
+                    if any(keyword in error_msg for keyword in [
+                        '无热门内容', '无热门主题', '部分结果',
+                        '无可分析内容', '无可供测试', '未找到可导出',
+                        '仍无可分析内容', '无任何主题'
+                    ]):
                         soft_failed_reports.append(r)
                     else:
                         hard_failed_reports.append(r)

@@ -5,8 +5,8 @@ on:
     # 每30分钟运行一次爬取任务，北京时间早7点到晚24点（UTC时间23:00-15:59）
     - cron: '0,30 23 * * *'
     - cron: '0,30 0-15 * * *'
-    # 北京时间8点、14点、20点运行报告任务（对应UTC 0:00 / 6:00 / 12:00）
-    - cron: '0 0,6,12 * * *'
+    # 北京时间9点、21点运行报告任务（对应UTC 1:00 / 13:00）
+    - cron: '0 1,13 * * *'
     # 每2天凌晨2点运行清理任务（北京时间）
     - cron: '0 18 */2 * *'
   workflow_dispatch:
@@ -45,7 +45,7 @@ on:
         description: '分析回溯小时数（analysis/report任务）'
         required: false
         type: number
-        default: 36
+        default: 48
 
 jobs:
   crawl:
@@ -248,8 +248,8 @@ jobs:
       
   report:
     runs-on: ubuntu-latest
-    # 北京时间8点、14点、20点运行一次
-    if: github.event.schedule == '0 0,6,12 * * *' || (github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'report')
+    # 北京时间9点、21点运行一次
+    if: github.event.schedule == '0 1,13 * * *' || (github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'report')
     
     steps:
     - name: Checkout code
@@ -272,7 +272,7 @@ jobs:
         if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
           # Manual run: use nodes from input, if provided
           python main.py --task report \
-            --hours-back ${{ github.event.inputs.hours_back || 36 }} \
+            --hours-back ${{ github.event.inputs.hours_back || 48 }} \
             --report-type ${{ github.event.inputs.report_type || 'hotspot' }} \
             ${{ github.event.inputs.nodes && format('--nodes "{0}"', github.event.inputs.nodes) || '' }} \
             ${{ github.event.inputs.nodes && '--skip-global' || '' }} \
@@ -281,7 +281,7 @@ jobs:
           # Scheduled run: generate report for specific nodes individually
           for node in create ideas business qna programmer; do
             echo "::group::生成节点 ${node} 的报告"
-            python main.py --task report --nodes "${node}" --hours-back 36 --skip-global --output json
+            python main.py --task report --nodes "${node}" --hours-back 48 --skip-global --output json
             echo "::endgroup::"
           done
         fi
