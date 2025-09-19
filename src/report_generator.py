@@ -206,35 +206,79 @@ class V2EXReportGenerator:
         self.logger.info(f"统一分析内容被截断: {len(content)} -> {len(truncated)} 字符")
         return truncated + "\n\n...[内容过长已被截断]"
     
-    def generate_node_report(self, node_name: str, hours_back: int = 24, 
+    def generate_node_report(self, node_name: str, hours_back: int = 24,
                            report_type: str = 'hotspot') -> Dict[str, Any]:
         """
         为指定节点生成分析报告
         """
         try:
             self.logger.info(f"开始为节点 '{node_name}' 生成 {report_type} 报告")
-            
+
             # 时间范围
             end_time = self.get_beijing_time()
             start_time = end_time - timedelta(hours=hours_back)
-            
-            # 获取热门主题
+
+            # 首先检查该节点在指定时间范围内是否有任何主题
+            cutoff_timestamp = int((datetime.now() - timedelta(hours=hours_back)).timestamp())
+            with self.db.get_cursor() as (cursor, connection):
+                cursor.execute(
+                    "SELECT COUNT(*) as total_count FROM v2ex_topics WHERE node_name = %s AND created_timestamp >= %s",
+                    (node_name, cutoff_timestamp)
+                )
+                total_topics = cursor.fetchone()['total_count']
+
+                # 同时检查有多少主题有互动（回复或感谢）
+                cursor.execute(
+                    "SELECT COUNT(*) as active_count FROM v2ex_topics WHERE node_name = %s AND created_timestamp >= %s AND (replies > 0 OR total_thanks_count > 0)",
+                    (node_name, cutoff_timestamp)
+                )
+                active_topics = cursor.fetchone()['active_count']
+
+                # 检查热度分数大于0的主题数量
+                cursor.execute(
+                    "SELECT COUNT(*) as hot_count FROM v2ex_topics WHERE node_name = %s AND created_timestamp >= %s AND hotness_score > 0",
+                    (node_name, cutoff_timestamp)
+                )
+                hot_topics_count = cursor.fetchone()['hot_count']
+
+            self.logger.info(f"节点 '{node_name}' 在过去 {hours_back} 小时内统计：总主题数={total_topics}, 有互动主题数={active_topics}, 热门主题数={hot_topics_count}")
+
+            # 获取热门主题（现在使用改进的多级策略）
             hot_topics = self.db.get_hot_topics_by_node(
-                node_name=node_name, 
+                node_name=node_name,
                 limit=self.top_topics_per_node,
                 period_hours=hours_back
             )
-            
+
             if not hot_topics:
-                self.logger.warning(f"节点 '{node_name}' 在过去 {hours_back} 小时内无热门主题")
-                return {
-                    'success': False,
-                    'error': f"节点 '{node_name}' 无热门内容",
-                    'node_name': node_name
-                }
-            
+                # 如果仍然没有找到主题，扩大时间范围再试一次
+                extended_hours = hours_back * 2  # 扩大到48小时
+                self.logger.warning(f"在 {hours_back} 小时内未找到主题，尝试扩大到 {extended_hours} 小时")
+
+                hot_topics = self.db.get_hot_topics_by_node(
+                    node_name=node_name,
+                    limit=self.top_topics_per_node,
+                    period_hours=extended_hours
+                )
+
+                if hot_topics:
+                    self.logger.info(f"扩大时间范围后找到 {len(hot_topics)} 个主题")
+                    # 更新实际使用的时间范围
+                    start_time = end_time - timedelta(hours=extended_hours)
+                else:
+                    return {
+                        'success': False,
+                        'error': f"节点 '{node_name}' 在过去 {extended_hours} 小时内仍无可分析内容",
+                        'node_name': node_name,
+                        'debug_info': {
+                            'total_topics_24h': total_topics,
+                            'active_topics_24h': active_topics,
+                            'hot_topics_24h': hot_topics_count
+                        }
+                    }
+
             # 批量获取主题详细信息和回复，避免N+1查询
-            self.logger.info("开始批量获取主题详情...")
+            self.logger.info(f"开始批量获取 {len(hot_topics)} 个主题的详情...")
             import time
             start_time_db = time.time()
             topic_ids = [topic['id'] for topic in hot_topics]
@@ -249,9 +293,13 @@ class V2EXReportGenerator:
                 return {
                     'success': False,
                     'error': f"无法获取节点 '{node_name}' 的主题详情",
-                    'node_name': node_name
+                    'node_name': node_name,
+                    'debug_info': {
+                        'topics_found': len(hot_topics),
+                        'topic_ids': topic_ids[:5]  # 只显示前5个ID用于调试
+                    }
                 }
-            
+
             # 直接调用统一报告生成方法
             return self._generate_unified_report(
                 node_name=node_name,
@@ -260,7 +308,7 @@ class V2EXReportGenerator:
                 end_time=end_time,
                 report_type=report_type
             )
-            
+
         except Exception as e:
             error_msg = f"生成节点 '{node_name}' 报告失败: {str(e)}"
             self.logger.error(error_msg, exc_info=True)

@@ -723,44 +723,106 @@ class DatabaseManager:
                 self.logger.error(f"备用查询也失败: {fallback_e}")
                 return []
     
-    def get_hot_topics_by_node(self, node_name: str = None, limit: int = 30, 
+    def get_hot_topics_by_node(self, node_name: str = None, limit: int = 30,
                               period_hours: int = 24) -> List[Dict[str, Any]]:
         """
-        获取指定节点或全站的热门主题
-        
+        获取指定节点或全站的热门主题，使用多级后备策略
+
         Args:
             node_name: 节点名称，None表示全站
             limit: 返回主题数量限制
             period_hours: 时间范围（小时），基于主题创建时间
-            
+
         Returns:
             热门主题列表，按热度分数降序排列
         """
         cutoff_timestamp = int((datetime.now() - timedelta(hours=period_hours)).timestamp())
-        
+
+        # 策略1: 优先选择有热度分数的主题
         if node_name:
-            sql = """
-            SELECT * FROM v2ex_topics 
-            WHERE node_name = %s 
+            sql_priority = """
+            SELECT * FROM v2ex_topics
+            WHERE node_name = %s
             AND created_timestamp >= %s
             AND hotness_score > 0
             ORDER BY hotness_score DESC, last_touched_timestamp DESC
             LIMIT %s
             """
-            params = (node_name, cutoff_timestamp, limit)
+            params_priority = (node_name, cutoff_timestamp, limit)
         else:
-            sql = """
-            SELECT * FROM v2ex_topics 
+            sql_priority = """
+            SELECT * FROM v2ex_topics
             WHERE created_timestamp >= %s
             AND hotness_score > 0
             ORDER BY hotness_score DESC, last_touched_timestamp DESC
             LIMIT %s
             """
-            params = (cutoff_timestamp, limit)
-        
+            params_priority = (cutoff_timestamp, limit)
+
         with self.get_cursor() as (cursor, connection):
-            cursor.execute(sql, params)
-            return cursor.fetchall()
+            cursor.execute(sql_priority, params_priority)
+            hot_topics = cursor.fetchall()
+
+            # 如果找到足够的热门主题，直接返回
+            if len(hot_topics) >= min(limit // 2, 5):  # 至少要有一半或5个主题
+                self.logger.info(f"找到 {len(hot_topics)} 个热门主题（策略1：热度分数>0）")
+                return hot_topics
+
+            # 策略2: 后备策略 - 按回复数和感谢数排序，不要求热度分数
+            self.logger.warning(f"热门主题数量不足({len(hot_topics)})，启用后备策略")
+
+            if node_name:
+                sql_fallback = """
+                SELECT * FROM v2ex_topics
+                WHERE node_name = %s
+                AND created_timestamp >= %s
+                ORDER BY (replies + total_thanks_count) DESC, last_touched_timestamp DESC
+                LIMIT %s
+                """
+                params_fallback = (node_name, cutoff_timestamp, limit)
+            else:
+                sql_fallback = """
+                SELECT * FROM v2ex_topics
+                WHERE created_timestamp >= %s
+                ORDER BY (replies + total_thanks_count) DESC, last_touched_timestamp DESC
+                LIMIT %s
+                """
+                params_fallback = (cutoff_timestamp, limit)
+
+            cursor.execute(sql_fallback, params_fallback)
+            fallback_topics = cursor.fetchall()
+
+            # 如果后备策略也找不到足够主题，尝试策略3
+            if len(fallback_topics) < min(limit // 3, 3):
+                self.logger.warning(f"后备策略主题数量仍不足({len(fallback_topics)})，启用最后策略")
+
+                # 策略3: 最后策略 - 按时间排序，只要是指定时间范围内的主题
+                if node_name:
+                    sql_time = """
+                    SELECT * FROM v2ex_topics
+                    WHERE node_name = %s
+                    AND created_timestamp >= %s
+                    ORDER BY created_timestamp DESC
+                    LIMIT %s
+                    """
+                    params_time = (node_name, cutoff_timestamp, limit)
+                else:
+                    sql_time = """
+                    SELECT * FROM v2ex_topics
+                    WHERE created_timestamp >= %s
+                    ORDER BY created_timestamp DESC
+                    LIMIT %s
+                    """
+                    params_time = (cutoff_timestamp, limit)
+
+                cursor.execute(sql_time, params_time)
+                time_topics = cursor.fetchall()
+
+                self.logger.info(f"使用时间策略找到 {len(time_topics)} 个主题")
+                return time_topics
+
+            self.logger.info(f"使用后备策略找到 {len(fallback_topics)} 个主题")
+            return fallback_topics
     
     def get_topic_with_replies(self, topic_id: int, reply_limit: int = 10) -> Optional[Dict[str, Any]]:
         """
