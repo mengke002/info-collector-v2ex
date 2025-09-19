@@ -312,31 +312,59 @@ class V2EXNotionClient:
         """解析文本格式（粗体、斜体等）"""
         import re
 
-        rich_text = []
+        # 按优先级处理格式：粗体 -> 斜体 -> 普通文本
+        # 使用更复杂的解析来支持嵌套格式
 
-        # 处理粗体 **text**
+        # 创建格式化片段列表 [(start, end, format_type, content)]
+        format_segments = []
+
+        # 查找粗体 **text**
         bold_pattern = r'\*\*([^*]+)\*\*'
-
-        last_end = 0
         for match in re.finditer(bold_pattern, text):
-            # 添加粗体前的普通文本
-            if match.start() > last_end:
-                before_text = text[last_end:match.start()]
+            format_segments.append((match.start(), match.end(), 'bold', match.group(1)))
+
+        # 查找斜体 *text* (但要避免与粗体冲突)
+        italic_pattern = r'(?<!\*)\*([^*]+)\*(?!\*)'
+        for match in re.finditer(italic_pattern, text):
+            # 检查是否与已有的粗体格式重叠
+            overlaps = any(
+                match.start() >= seg[0] and match.end() <= seg[1]
+                for seg in format_segments if seg[2] == 'bold'
+            )
+            if not overlaps:
+                format_segments.append((match.start(), match.end(), 'italic', match.group(1)))
+
+        # 按位置排序
+        format_segments.sort(key=lambda x: x[0])
+
+        # 构建rich_text
+        rich_text = []
+        last_end = 0
+
+        for start, end, format_type, content in format_segments:
+            # 添加格式前的普通文本
+            if start > last_end:
+                before_text = text[last_end:start]
                 if before_text:
                     rich_text.append({
                         "type": "text",
                         "text": {"content": before_text}
                     })
 
-            # 添加粗体文本
-            bold_text = match.group(1)
+            # 添加格式化文本
+            annotations = {}
+            if format_type == 'bold':
+                annotations["bold"] = True
+            elif format_type == 'italic':
+                annotations["italic"] = True
+
             rich_text.append({
                 "type": "text",
-                "text": {"content": bold_text},
-                "annotations": {"bold": True}
+                "text": {"content": content},
+                "annotations": annotations
             })
 
-            last_end = match.end()
+            last_end = end
 
         # 添加剩余的普通文本
         if last_end < len(text):
@@ -402,21 +430,48 @@ class V2EXNotionClient:
                         "type": "divider",
                         "divider": {}
                     })
-                # 列表项
-                elif line.startswith('- ') or line.startswith('* '):
-                    blocks.append({
-                        "object": "block",
-                        "type": "bulleted_list_item",
-                        "bulleted_list_item": {
-                            "rich_text": self._parse_rich_text(line[2:])
-                        }
-                    })
+                # 列表项 - 支持多层嵌套
+                elif line.startswith(('- ', '* ')) or (line.startswith(' ') and line.lstrip().startswith(('- ', '* '))):
+                    # 计算缩进级别
+                    indent_level = 0
+                    stripped_line = line.lstrip()
+
+                    # 计算前导空格数来确定层级
+                    leading_spaces = len(line) - len(stripped_line)
+                    if leading_spaces > 0:
+                        indent_level = min(leading_spaces // 2, 2)  # Notion最多支持3级嵌套(0,1,2)
+
+                    # 移除列表标记
+                    list_content = stripped_line[2:]  # 移除 '- ' 或 '* '
+
+                    if indent_level == 0:
+                        # 顶级列表项
+                        blocks.append({
+                            "object": "block",
+                            "type": "bulleted_list_item",
+                            "bulleted_list_item": {
+                                "rich_text": self._parse_rich_text(list_content)
+                            }
+                        })
+                    else:
+                        # 嵌套列表项 - 通过children实现
+                        # 但由于Notion API的限制，我们先转换为包含缩进标记的普通列表项
+                        indent_marker = "  " * indent_level + "• "
+                        formatted_content = indent_marker + list_content
+
+                        blocks.append({
+                            "object": "block",
+                            "type": "bulleted_list_item",
+                            "bulleted_list_item": {
+                                "rich_text": self._parse_rich_text(formatted_content)
+                            }
+                        })
                 # 普通段落
                 else:
                     # 处理可能的多行段落
                     paragraph_lines = [line]
                     j = i + 1
-                    while j < len(lines) and lines[j].strip() and not lines[j].startswith(('#', '-', '*', '---')):
+                    while j < len(lines) and lines[j].strip() and not lines[j].startswith(('#', '---')) and not (lines[j].startswith(('- ', '* ')) or (lines[j].startswith(' ') and lines[j].lstrip().startswith(('- ', '* ')))):
                         paragraph_lines.append(lines[j].strip())
                         j += 1
 
