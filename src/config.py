@@ -183,6 +183,14 @@ class Config:
             'parent_page_id': self._get_config_value('notion', 'parent_page_id', 'NOTION_PARENT_PAGE_ID', None)
         }
 
+    def get_report_nodes(self) -> list:
+        """
+        获取报告生成的节点列表（不包括被注释的节点）
+        返回节点名称列表，用于GitHub Actions等自动化场景
+        """
+        target_nodes = self.get_target_nodes()
+        return list(target_nodes.keys())
+
 
 # 创建一个全局配置实例
 config = Config()

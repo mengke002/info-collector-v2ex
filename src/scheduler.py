@@ -297,9 +297,28 @@ class Scheduler:
                                f"硬失败: {len(hard_failed_reports)}, "
                                f"无内容跳过: {len(soft_failed_reports)}。")
 
-            # 为了兼容旧的单报告输出，如果只有一个报告，则返回该报告的详细信息
+            # 为了兼容旧的单报告输出，如果只有一个报告，需要特殊处理软失败
             if len(all_reports) == 1:
-                return all_reports[0]
+                single_report = all_reports[0]
+                # 如果是软失败（无内容），将其视为成功并跳过
+                if not single_report.get('success'):
+                    error_msg = single_report.get('error', '')
+                    if any(keyword in error_msg for keyword in [
+                        '无热门内容', '无热门主题', '部分结果',
+                        '无可分析内容', '无可供测试', '未找到可导出',
+                        '仍无可分析内容', '无任何主题'
+                    ]):
+                        # 软失败：修改返回结果，表示成功跳过
+                        return {
+                            'success': True,
+                            'skipped': True,
+                            'reason': '无可分析内容，已跳过',
+                            'original_error': error_msg,
+                            'node_name': single_report.get('node_name', 'unknown'),
+                            'timestamp': self.get_beijing_time()
+                        }
+                # 硬失败或真正成功的情况，直接返回原结果
+                return single_report
 
             return final_result
 

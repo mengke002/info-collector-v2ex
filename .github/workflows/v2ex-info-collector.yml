@@ -278,12 +278,28 @@ jobs:
             ${{ github.event.inputs.nodes && '--skip-global' || '' }} \
             --output json
         else
-          # Scheduled run: generate report for specific nodes individually
-          for node in create ideas business qna programmer; do
+          # Scheduled run: get nodes from configuration dynamically
+          echo "::notice::获取动态节点配置"
+          REPORT_NODES=$(python3.12 src/get_report_nodes.py)
+          echo "::notice::将为以下节点生成报告: $REPORT_NODES"
+
+          for node in $REPORT_NODES; do
             echo "::group::生成节点 ${node} 的报告"
+            # 使用 set +e 来防止单个节点失败导致整个流程中断
+            set +e
             python main.py --task report --nodes "${node}" --hours-back 48 --skip-global --output json
+            exit_code=$?
+            set -e
+
+            if [ $exit_code -eq 0 ]; then
+              echo "::notice::节点 ${node} 报告生成成功"
+            else
+              echo "::warning::节点 ${node} 报告生成失败或跳过（可能无数据），继续处理其他节点"
+            fi
             echo "::endgroup::"
           done
+
+          echo "::notice::所有节点处理完成"
         fi
       env:
         # --- Required Secrets ---
