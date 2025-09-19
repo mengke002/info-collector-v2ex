@@ -106,7 +106,7 @@ class Config:
             'create': '分享创造',
             #'openai': 'OpenAI',
             'ideas': '奇思妙想',
-            'business': '商业模式',
+            #'business': '商业模式',
             'qna': '问与答',
             'programmer': '程序员'
         }
