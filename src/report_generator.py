@@ -495,7 +495,46 @@ class V2EXReportGenerator:
             final_result['error'] = "部分结果：LLM连接中断"
 
         return final_result
-    
+
+    def _enhance_source_links(self, report_content: str, hot_topics_data: List[Dict[str, Any]]) -> str:
+        """
+        增强报告中的来源链接，将 [Source: T1, T2] 中的每个 Txx 转换为可点击的链接
+        """
+        import re
+
+        # 构建来源ID到链接的映射
+        source_link_map = {}
+        for i, topic_data in enumerate(hot_topics_data, 1):
+            topic_info = topic_data['topic']
+            source_link_map[f'T{i}'] = topic_info.get('url', '')
+
+        def replace_source_refs(match):
+            # 提取完整的 Source 引用内容
+            full_source_text = match.group(0)  # 如 "[Source: T2, T9, T18]"
+            source_content = match.group(1)    # 如 "T2, T9, T18"
+
+            # 分割并处理每个来源ID
+            source_ids = [sid.strip() for sid in source_content.split(',')]
+            linked_sources = []
+
+            for sid in source_ids:
+                if sid in source_link_map:
+                    # 将 Txx 转换为链接
+                    linked_sources.append(f"[{sid}]({source_link_map[sid]})")
+                else:
+                    # 如果找不到对应链接，保持原样
+                    linked_sources.append(sid)
+
+            # 重新组合
+            return f"📎 [Source: {', '.join(linked_sources)}]"
+
+        # 查找所有 [Source: ...] 或 [Sources: ...] 模式并替换
+        # 注意v2ex使用的是 T_n 格式，稍微调整正则表达式
+        pattern = r'\[Sources?:\s*([T_\d\s,]+)\]'
+        enhanced_content = re.sub(pattern, replace_source_refs, report_content)
+
+        return enhanced_content
+
     def _generate_markdown_report(self, node_name: str, analysis_result: Dict[str, Any],
                                 hot_topics_data: List[Dict[str, Any]], start_time: datetime,
                                 end_time: datetime, report_title: str, 
@@ -557,8 +596,14 @@ class V2EXReportGenerator:
             "",
             "*本报告由AI自动生成，仅供参考*"
         ])
-        
-        return "\n".join(report_lines)
+
+        # 生成原始报告内容
+        raw_report = "\n".join(report_lines)
+
+        # 增强源链接，将 [Source: T1, T2] 转换为可点击链接
+        enhanced_report = self._enhance_source_links(raw_report, hot_topics_data)
+
+        return enhanced_report
 
 
 # 全局报告生成器实例
