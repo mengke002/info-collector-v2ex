@@ -1,6 +1,6 @@
 import os
 import configparser
-from typing import Dict, Any
+from typing import Dict, Any, List
 from dotenv import load_dotenv
 
 class Config:
@@ -144,14 +144,45 @@ class Config:
         
         return targets
     
+    def _parse_model_list(self, raw_value: str) -> List[str]:
+        """解析逗号分隔的模型列表，保持顺序并去重"""
+        if not raw_value:
+            return []
+
+        models: List[str] = []
+        for item in raw_value.split(','):
+            candidate = item.strip()
+            if candidate and candidate not in models:
+                models.append(candidate)
+        return models
+
     def get_llm_config(self) -> Dict[str, Any]:
         """获取LLM配置, 并映射到通用键名"""
+        api_key = self._get_config_value('llm', 'openai_api_key', 'OPENAI_API_KEY', None)
+        base_url = self._get_config_value('llm', 'openai_base_url', 'OPENAI_BASE_URL', 'https://api.openai.com/v1')
+        max_content_length = self._get_config_value('llm', 'max_content_length', 'LLM_MAX_CONTENT_LENGTH', 50000, int)
+        max_parallel_reports = self._get_config_value('llm', 'max_parallel_reports', 'LLM_MAX_PARALLEL_REPORTS', 4, int)
+
+        models_raw = self._get_config_value('llm', 'report_models', 'LLM_REPORT_MODELS', '', str)
+        if not models_raw:
+            models_raw = self._get_config_value('llm', 'openai_models', 'OPENAI_MODELS', '', str)
+        models = self._parse_model_list(models_raw)
+
+        # 向后兼容单模型配置
+        primary_model = self._get_config_value('llm', 'openai_model', 'OPENAI_MODEL', '', str)
+        if primary_model and primary_model not in models:
+            models.insert(0, primary_model)
+
+        if not models:
+            models.append('gpt-3.5-turbo')
+
         return {
-            'api_key': self._get_config_value('llm', 'openai_api_key', 'OPENAI_API_KEY', None),
-            'model': self._get_config_value('llm', 'openai_model', 'OPENAI_MODEL', 'gpt-3.5-turbo'),
-            'base_url': self._get_config_value('llm', 'openai_base_url', 'OPENAI_BASE_URL', 'https://api.openai.com/v1'),
-            'max_content_length': self._get_config_value('llm', 'max_content_length', 'LLM_MAX_CONTENT_LENGTH', 50000, int),
-            'max_parallel_reports': self._get_config_value('llm', 'max_parallel_reports', 'LLM_MAX_PARALLEL_REPORTS', 4, int)
+            'api_key': api_key,
+            'base_url': base_url,
+            'max_content_length': max_content_length,
+            'max_parallel_reports': max_parallel_reports,
+            'model': models[0],
+            'models': models
         }
     
     def get_analysis_config(self) -> Dict[str, Any]:

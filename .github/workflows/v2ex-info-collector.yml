@@ -79,6 +79,7 @@ jobs:
         TARGETS: ${{ secrets.TARGETS }}
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+        LLM_REPORT_MODELS: ${{ secrets.LLM_REPORT_MODELS }}
         OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
 
         # --- Optional Crawler Configuration ---
@@ -123,6 +124,7 @@ jobs:
         TARGETS: ${{ secrets.TARGETS }}
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+        LLM_REPORT_MODELS: ${{ secrets.LLM_REPORT_MODELS }}
         OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
 
         # --- Optional Configuration ---
@@ -160,6 +162,7 @@ jobs:
         TARGETS: ${{ secrets.TARGETS }}
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+        LLM_REPORT_MODELS: ${{ secrets.LLM_REPORT_MODELS }}
         OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
 
         # --- Optional Configuration ---
@@ -197,6 +200,7 @@ jobs:
         TARGETS: ${{ secrets.TARGETS }}
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+        LLM_REPORT_MODELS: ${{ secrets.LLM_REPORT_MODELS }}
         OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
 
         # --- Optional Analysis Configuration ---
@@ -237,6 +241,7 @@ jobs:
         TARGETS: ${{ secrets.TARGETS }}
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+        LLM_REPORT_MODELS: ${{ secrets.LLM_REPORT_MODELS }}
         OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
 
         # --- Optional Analysis Configuration ---
@@ -323,6 +328,7 @@ jobs:
         
         # --- Optional LLM Configuration ---
         OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+        LLM_REPORT_MODELS: ${{ secrets.LLM_REPORT_MODELS }}
         OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
         LLM_MAX_CONTENT_LENGTH: ${{ secrets.LLM_MAX_CONTENT_LENGTH }}
 
@@ -372,6 +378,7 @@ jobs:
         
         # --- Optional LLM Configuration ---
         OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+        LLM_REPORT_MODELS: ${{ secrets.LLM_REPORT_MODELS }}
         OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
         LLM_MAX_CONTENT_LENGTH: ${{ secrets.LLM_MAX_CONTENT_LENGTH }}
 

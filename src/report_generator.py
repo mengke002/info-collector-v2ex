@@ -28,6 +28,36 @@ class V2EXReportGenerator:
     def get_beijing_time(self) -> datetime:
         """获取当前北京时间"""
         return datetime.now(timezone.utc) + timedelta(hours=8)
+
+    def _get_report_models(self) -> List[str]:
+        """获取用于生成报告的模型列表"""
+        if not self.llm:
+            return []
+
+        models = getattr(self.llm, 'models', None) or []
+        models = [m for m in models if m]
+        if models:
+            return models
+
+        fallback = getattr(self.llm, 'model', None)
+        return [fallback] if fallback else []
+
+    def _get_model_display_name(self, model_name: str) -> str:
+        """根据模型名称生成用于展示的友好名称"""
+        if not model_name:
+            return 'LLM'
+
+        lower_name = model_name.lower()
+        if 'gemini' in lower_name:
+            return 'Gemini'
+        if 'glm' in lower_name and '4.5' in lower_name:
+            return 'GLM4.5'
+        if 'glm' in lower_name:
+            return 'GLM'
+        if 'deepseek' in lower_name:
+            return 'DeepSeek'
+
+        return model_name
     
     def _truncate_content_for_logging(self, content: str, max_length: int = 300) -> str:
         """
@@ -387,33 +417,102 @@ class V2EXReportGenerator:
         # 使用新的方法格式化所有主题内容
         unified_content = self._format_topics_for_analysis(hot_topics_data)
 
-        # LLM分析
         if not self.llm:
             return {'success': False, 'error': 'LLM客户端未初始化'}
 
-        # 获取报告类型的对应prompt
-        if report_type == 'hotspot':
-            prompt_template = self._get_hotspot_prompt_template()
-        else:
-            # 为其他报告类型可以定义不同的prompt，此处使用一个简单的默认值
-            self.logger.warning(f"报告类型 '{report_type}' 没有专门的Prompt模板，将使用默认分析。")
-            prompt_template = "请总结以下内容的主要看点、争议和结论：\n\n{content}"
+        prompt_template = self._get_hotspot_prompt_template() if report_type == 'hotspot' else "请总结以下内容的主要看点、争议和结论：\n\n{content}"
 
-        llm_result = self.llm.analyze_content(unified_content, prompt_template)
+        models_to_generate = self._get_report_models()
+        if not models_to_generate:
+            return {'success': False, 'error': '未配置可用于生成报告的LLM模型'}
         
+        base_title = "🌟 V2EX全站热点洞察报告" if node_name == "全站" else f"📈 [{node_name}]节点热点洞察报告"
+
+        model_reports: List[Dict[str, Any]] = []
+        failures: List[Dict[str, Any]] = []
+
+        for model_name in models_to_generate:
+            display_name = self._get_model_display_name(model_name)
+            model_result = self._generate_report_for_model(
+                model_name=model_name,
+                display_name=display_name,
+                prompt_template=prompt_template,
+                unified_content=unified_content,
+                hot_topics_data=hot_topics_data,
+                start_time=start_time,
+                end_time=end_time,
+                report_type=report_type,
+                base_title=base_title,
+                node_name=node_name
+            )
+
+            if model_result.get('success'):
+                model_reports.append(model_result)
+            else:
+                failures.append(model_result)
+
+        overall_success = len(model_reports) > 0
+        final_result: Dict[str, Any] = {
+            'success': overall_success,
+            'node_name': node_name,
+            'report_type': report_type,
+            'topics_analyzed': len(hot_topics_data) if overall_success else 0,
+            'model_reports': model_reports,
+            'failures': failures
+        }
+
+        if overall_success:
+            primary_report = model_reports[0]
+            final_result.update({
+                'report_id': primary_report.get('report_id'),
+                'report_title': primary_report.get('report_title'),
+                'report_content': primary_report.get('report_content'),
+                'report_content_preview': primary_report.get('report_content_preview'),
+                'analysis_provider': primary_report.get('analysis_provider'),
+                'analysis_model': primary_report.get('analysis_model'),
+                'generated_at': primary_report.get('generated_at'),
+                'notion_push': primary_report.get('notion_push')
+            })
+
+            if any(report.get('partial') for report in model_reports):
+                final_result['partial'] = True
+        else:
+            final_result.setdefault('error', '所有模型均生成失败')
+
+        return final_result
+
+    def _generate_report_for_model(
+        self,
+        *,
+        model_name: str,
+        display_name: str,
+        prompt_template: str,
+        unified_content: str,
+        hot_topics_data: List[Dict[str, Any]],
+        start_time: datetime,
+        end_time: datetime,
+        report_type: str,
+        base_title: str,
+        node_name: str
+    ) -> Dict[str, Any]:
+        """针对单个模型生成报告并执行落地操作"""
+
+        llm_result = self.llm.analyze_content(
+            unified_content,
+            prompt_template,
+            model_override=model_name
+        )
+
         if not llm_result.get('success'):
             return {
                 'success': False,
-                'error': f"LLM分析失败: {llm_result.get('error', '未知错误')}"
+                'model': model_name,
+                'model_display': display_name,
+                'error': llm_result.get('error', 'LLM分析失败')
             }
-        
-        # 生成报告标题
-        if node_name == "全站":
-            report_title = f"🌟 V2EX全站热点洞察报告"
-        else:
-            report_title = f"📈 [{node_name}]节点热点洞察报告"
-        
-        # 生成Markdown报告
+
+        report_title = f"{base_title} - {display_name}"
+
         markdown_report = self._generate_markdown_report(
             node_name=node_name,
             analysis_result=llm_result,
@@ -423,8 +522,8 @@ class V2EXReportGenerator:
             report_title=report_title,
             report_type=report_type
         )
-        
-        # 保存报告
+
+        generated_at = self.get_beijing_time()
         report_data = {
             'node_name': node_name,
             'report_type': report_type,
@@ -433,12 +532,12 @@ class V2EXReportGenerator:
             'topics_analyzed': len(hot_topics_data),
             'report_title': report_title,
             'report_content': markdown_report,
-            'generated_at': self.get_beijing_time()
+            'generated_at': generated_at
         }
-        
+
         report_id = self.db.insert_report(report_data)
 
-        final_result = {
+        model_report: Dict[str, Any] = {
             'success': True,
             'report_id': report_id,
             'node_name': node_name,
@@ -449,19 +548,25 @@ class V2EXReportGenerator:
             'report_content_preview': self._truncate_content_for_logging(markdown_report, 300),
             'analysis_provider': llm_result.get('provider'),
             'analysis_model': llm_result.get('model'),
-            'generated_at': report_data['generated_at']
+            'generated_at': generated_at,
+            'model': model_name,
+            'model_display': display_name
         }
 
-        # 尝试推送到Notion
+        if llm_result.get('partial'):
+            model_report['partial'] = True
+
         try:
             from .notion_client import v2ex_notion_client
 
-            # 格式化Notion标题
             beijing_time = self.get_beijing_time()
             time_str = beijing_time.strftime('%H:%M')
-            notion_title = f"[{time_str}] {node_name}节点热点报告 ({len(hot_topics_data)}个主题)"
+            notion_title = (
+                f"[{display_name}] {node_name}节点热点报告 - {time_str}"
+                f" ({len(hot_topics_data)}个主题)"
+            )
 
-            self.logger.info(f"开始推送报告到Notion: {notion_title}")
+            self.logger.info(f"[{display_name}] 开始推送报告到Notion: {notion_title}")
 
             notion_result = v2ex_notion_client.create_report_page(
                 report_title=notion_title,
@@ -470,31 +575,28 @@ class V2EXReportGenerator:
             )
 
             if notion_result.get('success'):
-                self.logger.info(f"报告成功推送到Notion: {notion_result.get('page_url')}")
-                final_result['notion_push'] = {
+                self.logger.info(f"[{display_name}] 报告成功推送到Notion: {notion_result.get('page_url')}")
+                model_report['notion_push'] = {
                     'success': True,
                     'page_url': notion_result.get('page_url'),
                     'path': notion_result.get('path')
                 }
             else:
-                self.logger.warning(f"推送到Notion失败: {notion_result.get('error')}")
-                final_result['notion_push'] = {
+                error_msg = notion_result.get('error', '未知错误')
+                self.logger.warning(f"[{display_name}] 推送到Notion失败: {error_msg}")
+                model_report['notion_push'] = {
                     'success': False,
-                    'error': notion_result.get('error')
+                    'error': error_msg
                 }
 
         except Exception as e:
-            self.logger.warning(f"推送到Notion时出错: {e}")
-            final_result['notion_push'] = {
+            self.logger.warning(f"[{display_name}] 推送到Notion时出错: {e}")
+            model_report['notion_push'] = {
                 'success': False,
                 'error': str(e)
             }
 
-        if llm_result.get('partial'):
-            final_result['success'] = False
-            final_result['error'] = "部分结果：LLM连接中断"
-
-        return final_result
+        return model_report
 
     def _enhance_source_links(self, report_content: str, hot_topics_data: List[Dict[str, Any]]) -> str:
         """
